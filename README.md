@@ -375,7 +375,7 @@ python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --load --con
 | 代码 | code_aware | CodeSearchNet fact-QA，`tests/evals/code_factqa/data/` | 100 | 115.1 | 56.9 | 41.3% | 100/100（100.0%） |
 | 搜索结果 | search | headroom grep 输出，`tests/evals/search_deterministic/data/` | 100 | 827.0 | 229.0 | 71.1% | 97/100（97.0%） |
 | 日志 | log | LogHub 真实日志（7 个来源），`tests/evals/log_deterministic/data/` | 100 | 1458.6 | 461.8 | 66.8% |  85/100（85.0%）|
-| Git diff | diff | headroom commit（≥18% 压缩子集），`tests/evals/git_diff_judge/data/` | 50 | 6756.7 | 4119.3 | 35.2% | 50/50（100.0%） |
+| Git diff | diff | headroom commit，`tests/evals/git_diff_judge/data/` | 50 | 6756.7 | 4119.3 | 35.2% | 50/50（100.0%） |
 | 图片 | image | TextVQA baseline20，`tests/evals/image_textvqa/data/` | 20 | 510.0 | 255.0 | 50.0% | 18/20（90.0%） |
 
 各场景的判分口径、数据集来源、筛选规则都写在对应测试脚本头部，不再在 README 重复展开。
