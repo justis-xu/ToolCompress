@@ -243,14 +243,43 @@ python3.12 tests/verify.py --url http://localhost:8010
 ### 性能测试
 
 ```bash
-# 60s 压测（显示 QPS、p50、p95）
+# 60s 串行压测（显示 QPS、p50、p95）
 mise run bench
+
+# 并发压测（扫描 1→2→4→8→16 并发，60s/级，找峰值 QPS 和延迟拐点）
+mise run bench-load
 
 # 快速测试（5s/场景）
 mise run bench-quick
 
 # 效果测试（关键词保留率）
 mise run bench-quality
+```
+
+**实测吞吐（Linux 2核 2worker，并发8）**
+
+| 场景 | 峰值 QPS | p50 | p95 | p99 |
+|---|---|---|---|---|
+| JSON | 82/s | 105ms | 158ms | 182ms |
+| 搜索结果 | 85/s | 102ms | 155ms | 182ms |
+| 日志 英文 | 68/s | 117ms | 161ms | 180ms |
+| 日志 中文 | 76/s | 104ms | 144ms | 160ms |
+| 代码 | 44/s | 176ms | 271ms | 300ms |
+
+> 并发 8 时 QPS 饱和，继续加并发延迟升、吞吐不增。单请求 p50 14~35ms。
+
+### 效果评测
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.deepseek.com
+export EVAL_MODEL=deepseek-v4-flash
+
+# 端到端评测（通过 /compress 接口，验证压缩后 LLM 回答准确率）
+mise run eval
+
+# 全量评测（所有数据集，n=200）
+mise run eval-full
 ```
 
 ---

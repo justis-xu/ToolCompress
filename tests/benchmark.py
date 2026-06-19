@@ -403,64 +403,47 @@ def run_quality(base: str) -> None:
 def run_eval_llm() -> None:
     """LLM 效果测试：压缩后内容是否仍能正确回答问题。
 
-    使用 OpenAI 协议，支持任意兼容服务（OpenAI、Azure、本地 vLLM 等）。
+    使用 OpenAI 协议，支持任意兼容服务（OpenAI、DeepSeek、Azure、本地 vLLM 等）。
 
     需要：
       export OPENAI_API_KEY=sk-...
-      export OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
-      export EVAL_MODEL=gpt-4o-mini                      # 可选
+      export OPENAI_BASE_URL=https://api.deepseek.com   # 可选，默认 OpenAI
+      export EVAL_MODEL=deepseek-v4-flash               # 可选，默认 gpt-4o-mini
       pip install openai headroom-ai[evals]
     """
     api_key  = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")  # None → openai 默认
+    base_url = os.environ.get("OPENAI_BASE_URL")
     model    = os.environ.get("EVAL_MODEL", "gpt-4o-mini")
 
     if not api_key:
-        print("\n[eval] 跳过：未设置 OPENAI_API_KEY")
+        print("\n[eval] ⚠️  跳过 —— 未设置 OPENAI_API_KEY，请先：")
         print("       export OPENAI_API_KEY=sk-...")
-        print("       export OPENAI_BASE_URL=https://your-endpoint/v1  # 如用兼容服务")
-        print("       export EVAL_MODEL=gpt-4o-mini                     # 可选")
-        return
+        print("       export OPENAI_BASE_URL=https://api.deepseek.com  # DeepSeek")
+        print("       export EVAL_MODEL=deepseek-v4-flash")
+        raise SystemExit(1)
 
     try:
-        from openai import OpenAI
-        from headroom.evals.core import EvalRunner
-        from headroom.evals.datasets import load_tool_outputs
-        from headroom.transforms.content_router import ContentRouter, ContentRouterConfig
+        from headroom.evals import run_quick_eval
     except ImportError as e:
-        print(f"\n[eval] 跳过：缺少依赖 ({e})")
+        print(f"\n[eval] ⚠️  跳过 —— 缺少依赖 ({e})")
         print("       pip install openai headroom-ai[evals]")
-        return
+        raise SystemExit(1)
 
     print(f"\n{'='*90}")
-    print(f"LLM 效果测试：压缩前后回答准确率对比  model={model}  base_url={base_url or '(openai default)'}")
+    print(f"LLM 效果测试  model={model}  base_url={base_url or '(openai default)'}")
     print(f"{'='*90}")
 
-    kwargs: dict = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    client = OpenAI(**kwargs)
-    router = ContentRouter(ContentRouterConfig(enable_kompress=False))
-
-    def llm_fn(context: str, query: str) -> str:
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=256,
-            messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}],
-        )
-        return resp.choices[0].message.content or ""
-
-    suite  = load_tool_outputs(n=20)
-    runner = EvalRunner(compressor=router, llm_fn=llm_fn)
-    result = runner.run(suite)
+    result = run_quick_eval(n_samples=20, provider="openai", model=model)
 
     print(f"\n{'指标':<30} {'值':>10}")
     print("-" * 45)
-    print(f"{'测试样本数':<30} {result.total:>10}")
-    print(f"{'原始回答准确率':<30} {result.original_accuracy:>9.1%}")
-    print(f"{'压缩后回答准确率':<30} {result.compressed_accuracy:>9.1%}")
-    print(f"{'准确率损失':<30} {result.original_accuracy - result.compressed_accuracy:>9.1%}")
+    print(f"{'测试样本数':<30} {result.total_cases:>10}")
+    print(f"{'通过（信息保留）':<30} {result.passed_cases:>10}")
+    print(f"{'失败':<30} {result.failed_cases:>10}")
+    print(f"{'信息保留率':<30} {result.accuracy_preservation_rate:>9.1%}")
+    print(f"{'平均 F1':<30} {result.avg_f1_score:>9.3f}")
     print(f"{'平均压缩率':<30} {result.avg_compression_ratio:>9.1%}")
+    print(f"{'节省 token':<30} {result.total_tokens_saved:>10,}")
     print()
 
 
