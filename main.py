@@ -46,21 +46,135 @@ def _estimate_tokens(width: int, height: int) -> int:
     return 170 + 85 * tiles_x * tiles_y
 
 
+_NON_WHITESPACE_WORD_BOUNDARY_RE = re.compile(r"\\n|[,:;]")
+
+
 def _count_text_tokens(text: str) -> int:
-    """CJK-aware token estimate: one regex pass, no per-char loop."""
+    """CJK-aware token估算：一次正则替换，不逐字符遍历。
+
+    SmartCrusher对大批量同构JSON数组会输出"压缩表格"格式——行与行之间用的是
+    字面意义上的"\\n"两个字符（反斜杠+n），不是真正的换行符，逗号/冒号分隔
+    字段也不是空白字符。原来只按真实空白字符split()，这种几乎没有空格的
+    blob会被整段当成1个词，导致compressed_tokens严重低估、ratio虚低（实测：
+    100条同构JSON记录，真实token数约512，旧逻辑算出来是1）。这里把字面\\n
+    和逗号/冒号/分号也当成分词边界，跟真实空白字符一起处理。
+    """
     cjk_chars = sum(len(m) for m in _CJK_RE.findall(text))
-    non_cjk_words = len(_CJK_RE.sub(" ", text).split())
+    normalized = _NON_WHITESPACE_WORD_BOUNDARY_RE.sub(" ", _CJK_RE.sub(" ", text))
+    non_cjk_words = len(normalized.split())
     return max(1, non_cjk_words + int(cjk_chars * 0.6))
 
 
 _router = None
 _image_sem: anyio.Semaphore | None = None
 
+def _patch_is_mixed_content() -> None:
+    r"""阻止 ContentRouter 把真实内容误判成 'mixed'——一旦判成 mixed，内容会
+    几乎原样透传，而不会真正走到对应的专用压缩器
+    (HTMLExtractor / LogCompressor / DiffCompressor)。
+
+    headroom 的 is_mixed_content() 只要命中下面4个粗糙正则指标里的2个，就判
+    mixed：{代码块```、以'{'/'['开头的行、大写开头的"散文"模式、grep风格的
+    "file:line:"结果}。这是一类*通用*的误判，不是只对某一种内容类型，做这
+    次评测的过程中独立发现了3次：
+
+    - 整页HTML：内嵌的<script>{...}</script> JSON-LD（命中json_blocks）+
+      任意一段正文文字（命中prose）。Scrapinghub benchmark实测：5个样本里
+      4个落到strategy=mixed，ratio≈1.0（HTMLExtractor根本没跑）。
+    - 真实日志文件：_SEARCH_RESULT_PATTERN（r"^\S+:\d+:"，本意是抓grep的
+      "file:line:"格式）误判普通时间戳，比如"...21:27:09"（\S+先吞掉文件名
+      /日期前缀，然后":27:"刚好满足":\d+:"）+ prose（随便一句日志描述都会
+      命中）。LogHub的OpenStack样本实测：该保留的WARNING/Exception行在
+      mixed策略下recall=0%（ratio≈0.014）。
+    - 真实git diff：commit message里的正文文字 + hunk里以`{`/`}`开头的代码
+      行（命中json_blocks）。从这个仓库自己的git log里抽3个真实commit测，
+      2/3落到strategy=mixed，ratio≈1.0（DiffCompressor根本没跑）。
+
+    修复思路：不再一种内容类型打一个补丁，而是先依次问所有专用检测器
+    （html/diff/log/search）；只要有一个给出高置信度，那就是一个真实、具
+    体的类型——绝不让粗糙的mixed启发式覆盖一个有把握的具体判断。这个修复
+    同时也覆盖了_detect_content()本身——它在Linux上默认走Rust核心后端（不
+    是headroom纯Python的content_detector模块），而Rust后端对日志时间戳有
+    完全一样的SEARCH_RESULTS误判，跟用哪个后端无关。
+
+    这里直接打补丁（不改headroom上游源码），因为ToolCompress用pip锁定了
+    headroom-ai==0.26.0这个版本；改这个仓库的源码不会影响已经装好的那个包，
+    除非等它发新版本。
+    """
+    import headroom.transforms.content_router as _cr
+    from headroom.transforms.content_detector import (
+        _try_detect_html,
+        _try_detect_diff,
+        _try_detect_log,
+        _try_detect_search,
+    )
+
+    # (检测器, 信得过它、可以覆盖mixed判断所需的最低置信度)
+    _DETECTORS = [
+        (_try_detect_html, 0.7),
+        (_try_detect_diff, 0.7),
+        (_try_detect_log, 0.5),
+        (_try_detect_search, 0.6),
+    ]
+
+    def _confident_specific_type(content: str) -> Any | None:
+        for detect, min_confidence in _DETECTORS:
+            result = detect(content)
+            if result is not None and result.confidence >= min_confidence:
+                return result
+        return None
+
+    original_is_mixed = _cr.is_mixed_content
+
+    def patched_is_mixed(content: str) -> bool:
+        if _confident_specific_type(content) is not None:
+            return False
+        return original_is_mixed(content)
+
+    _cr.is_mixed_content = patched_is_mixed
+
+    # is_mixed_content这一关过了之后，还要防一手_detect_content()本身（Linux
+    # 上默认是Rust核心后端）独立产生的误判。只重新判定两种"弱"结果
+    # （SEARCH_RESULTS，跟上面同一个误判正则；PLAIN_TEXT，兜底分类）——绝不
+    # 覆盖一个已经是具体类型的结果（比如JSON_ARRAY），避免好心办坏事，引入
+    # 新的误判。
+    #
+    # 有一个例外：SOURCE_CODE。对一个真实代码库跑grep/rg，每一行内容本身就
+    # 是看起来合法的代码（"file.py:42:import json"），所以Rust会很confident
+    # 地判成source_code（实测验证过：在容器里对一段真实`grep -rn import`的
+    # 输出，confidence=1.0）——但headroom自己的CodeAwareCompressor没法对一
+    # 个每行都粘着"file:line:"前缀的内容块做AST解析，会解析失败回退成原样
+    # 透传（ratio=1.0）；而专门做这件事的SearchCompressor就是为了处理这种
+    # 格式设计的（它自己的测试套件里断言的例子就是
+    # "src/main.py:42:def process_data(items):"）。Python版本search检测器
+    # 的正则（行首r"^\S+:\d+:"，且要求30%以上的行命中）本身就很窄，误报率
+    # 低，所以置信度足够高时可以放心拿它去覆盖source_code的判断——这里用了
+    # 比下面通用阈值(0.6)更严格的门槛(0.9)，因为这是唯一一处要去覆盖"非弱"
+    # 分类结果的情况，要格外小心。
+    _OVERRIDABLE = {_cr.ContentType.SEARCH_RESULTS, _cr.ContentType.PLAIN_TEXT}
+    original_detect = _cr._detect_content
+
+    def patched_detect(content: str) -> Any:
+        result = original_detect(content)
+        if result.content_type == _cr.ContentType.SOURCE_CODE:
+            search_result = _try_detect_search(content)
+            if search_result is not None and search_result.confidence >= 0.9:
+                return search_result
+            return result
+        if result.content_type in _OVERRIDABLE:
+            specific = _confident_specific_type(content)
+            if specific is not None and specific.content_type != result.content_type:
+                return specific
+        return result
+
+    _cr._detect_content = patched_detect
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _router, _image_sem
     from headroom.transforms.content_router import ContentRouter, ContentRouterConfig
+    _patch_is_mixed_content()
     logger.info("initializing ContentRouter")
     _router = ContentRouter(ContentRouterConfig(
         enable_kompress=False,

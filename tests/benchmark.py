@@ -77,16 +77,32 @@ def _make_search(n: int) -> str:
     )
 
 def _make_code(n: int) -> str:
+    # 每个函数 >=15 行：headroom code_aware 对 <15 行函数按设计透传
+    # （main.py README "已知限制"），<15 行的话整段payload测不出压缩效果，
+    # 不是bug（已经在 CodeSearchNet 数据集筛选时验证过这条规则）。
     return "\n".join([
         "import os, sys, json, logging",
         "from typing import Optional, List",
         "",
     ] + [
         f"def process_{i}(data: List[dict]) -> Optional[dict]:\n"
-        f"    \"\"\"Process item {i}.\"\"\"\n"
-        f"    if not data:\n        return None\n"
-        f"    result = {{}}\n"
-        f"    for item in data:\n        result[item['id']] = item['value']\n"
+        f"    \"\"\"Process item {i}: validate, normalize, aggregate.\"\"\"\n"
+        f"    if not data:\n"
+        f"        logging.warning(\"process_{i}: empty input\")\n"
+        f"        return None\n"
+        f"    result: dict = {{}}\n"
+        f"    skipped = 0\n"
+        f"    for item in data:\n"
+        f"        if 'id' not in item or 'value' not in item:\n"
+        f"            skipped += 1\n"
+        f"            continue\n"
+        f"        key = str(item['id']).strip().lower()\n"
+        f"        if key in result:\n"
+        f"            result[key] = result[key] + item['value']\n"
+        f"        else:\n"
+        f"            result[key] = item['value']\n"
+        f"    if skipped:\n"
+        f"        logging.info(\"process_{i}: skipped %d malformed items\", skipped)\n"
         f"    return result\n"
         for i in range(n)
     ])

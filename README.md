@@ -277,83 +277,75 @@ mise run bench-quick
 
 Payload 覆盖三档规模（100 / 500 / 1000 条），模拟真实工具调用大小。
 
-**实测吞吐（Linux 2核 2worker，并发8）**
-
-| 场景 | payload 规模 | 峰值 QPS | p50 | p95 | p99 |
-|---|---|---|---|---|---|
-| JSON | 100 条 ~6KB | 82/s | 105ms | 158ms | 182ms |
-| 搜索结果 | 200 行 ~12KB | 85/s | 102ms | 155ms | 182ms |
-| 日志 英文 | 500 行 ~35KB | 68/s | 117ms | 161ms | 180ms |
-| 日志 中文 | 300 行 ~20KB | 76/s | 104ms | 144ms | 160ms |
-| 代码 | 30 函数 ~8KB | 44/s | 176ms | 271ms | 300ms |
-
-> 并发 8 时 QPS 饱和，继续加并发延迟升、吞吐不增。单请求串行 p50 14~35ms。  
-> 注：headroom 官方 benchmark 测 1K 条 JSON 时 p50≈2s，payload 越大压缩耗时线性增长。
-
-### 效果评测
-
-**方案**：before/after QA 准确度对比，不依赖 LLM judge。
-
-```
-数据集自带 ground_truth（短答案，如地名、人名、数字）
-
-Baseline：  原始 context + question → LLM → 回答
-                                               ↓ token-overlap F1 vs ground_truth
-Compressed：/compress(context) + question → LLM → 回答
-                                               ↓ token-overlap F1 vs ground_truth
-
-保留率 = compressed_F1 / baseline_F1（越接近 100% 越好）
-```
-
-**数据集**：
-
-| 数据集 | 场景 | 样本数 |
-|---|---|---|
-| tool_outputs | 内置工具调用样本 | 8 |
-| hotpotqa | 多跳推理 QA（Wikipedia） | 500 |
-| msmarco | 搜索段落 QA（Bing） | 500 |
-| codesearchnet | 代码搜索 | 500 |
-
-> squad / bfcl 不纳入：squad 全部透传（测不出压缩效果）；bfcl ground_truth 为 JSON schema，token overlap F1 无意义。
-
-```bash
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.deepseek.com
-export EVAL_MODEL=deepseek-v4-flash
-
-# 端到端评测（hotpotqa + msmarco + codesearchnet，n=500，并发20）
-mise run eval
-
-# 全量评测（n=500，所有有效数据集）
-mise run eval-full
-```
-
-**成本换算**（参考 GPT-5 输入价格 $5/1M token）：
-
-```
-节省成本 = (original_tokens - compressed_tokens) × $5 / 1,000,000
-```
-
-eval_service.py 输出结果中包含每个数据集的 token 节省量和估算成本。
-
 ---
 
-## 实测压缩率
+## 测试结果
 
-测试环境：Docker 容器，stock headroom-ai，`enable_kompress=False`
+测试时间：2026-06-19 11:13:26 CST
 
-| 类型 | 数据规模 | 策略 | token 压缩至 |
-|---|---|---|---|
-| JSON 英文 | 500 条订单记录 | smart_crusher | **0.0%** |
-| JSON 中文 | 300 条告警记录 | smart_crusher | 37.6% |
-| 日志 英文 | 1000 行 INFO/ERROR | log | **7.7%** |
-| 日志 中文 | 800 行含 ERROR | log | **12.0%** |
-| 代码 英文 | 4 个方法（PaymentService） | code_aware | 41.0% |
-| 代码 中文 | 3 个方法（订单服务） | code_aware | 33.2% |
-| 搜索 英文 | 500 行 grep 结果 | search | **7.5%** |
-| 搜索 中文 | 400 行 grep 结果 | search | **9.1%** |
-| Git diff | 20 个 hunk | diff | 56.6% |
-| HTML | ML 文章含广告导航 | html | 75.7% |
+测试版本：`5d425b3`，本地工作区干净。测试服务地址为 `http://localhost:8010`，本地 Docker 服务 `/health` 返回 `{"status":"ok"}`。
+
+### 功能验证
+
+命令：
+
+```bash
+mise run verify
+```
+
+结果：**86/86 全部通过**。
+
+覆盖范围：
+
+| 范围 | 结果 |
+|---|---|
+| `/health` | 通过 |
+| `/compress` 文本压缩与内容路由 | 通过 |
+| `/compress/batch` 批量文本压缩 | 通过 |
+| `/compress/image` 图片压缩 | 通过 |
+| `/compress/image/batch` 批量图片压缩 | 通过 |
+| 错误处理、边界内容、并发稳定性、幂等性 | 通过 |
+
+### 远端性能测试
+
+目标服务器：`62.234.152.102`
+
+部署：已使用 `ubuntu@62.234.152.102` 将当前工作区同步到 `/home/ubuntu/ToolCompress`，停止旧 ToolCompress 容器并通过 `docker-compose up -d --build` 重启，远端 `/health` 返回 `{"status":"ok"}`。
+
+命令：
+
+```bash
+python3.12 tests/benchmark.py --url http://localhost:8010 --duration 60
+python3.12 tests/benchmark.py --url http://localhost:8010 --load --concurrency 16 --duration 60
+```
+
+结果：
+
+| 场景 | 策略 | token in | token out | 压缩至 | 节省 | p50 | p95 | QPS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| JSON 100 | smart_crusher | 1,000 | 1 | 0.1% | 99.9% | 16.5ms | 17.7ms | 59.9/s |
+| JSON 500 | smart_crusher | 5,000 | 1 | <0.1% | >99.9% | 31.1ms | 32.9ms | 31.9/s |
+| JSON 1000 | smart_crusher | 10,000 | 1 | <0.1% | >99.9% | 50.0ms | 52.8ms | 19.8/s |
+| JSON 中文 | smart_crusher | 2,494 | 823 | 33.0% | 67.0% | 16.3ms | 17.4ms | 60.4/s |
+| 日志 500 | log | 3,500 | 484 | 13.8% | 86.2% | 25.6ms | 27.3ms | 38.6/s |
+| 日志 1000 | log | 7,000 | 484 | 6.9% | 93.1% | 36.3ms | 38.1ms | 27.3/s |
+| 日志 2000 | log | 14,000 | 484 | 3.5% | 96.5% | 59.2ms | 62.1ms | 16.8/s |
+| 日志 中文 | log | 3,702 | 853 | 23.0% | 77.0% | 20.2ms | 21.5ms | 48.8/s |
+| 搜索 200 | search | 680 | 160 | 23.5% | 76.5% | 14.5ms | 15.3ms | 68.0/s |
+| 搜索 500 | search | 1,700 | 160 | 9.4% | 90.6% | 16.8ms | 17.7ms | 58.9/s |
+| 搜索 1000 | search | 3,400 | 160 | 4.7% | 95.3% | 20.5ms | 22.4ms | 48.0/s |
+| 搜索 中文 | search | 692 | 51 | 7.4% | 92.6% | 14.0ms | 15.0ms | 70.1/s |
+| 代码 200 | code_aware | 760 | 760 | 100.0% | 0.0% | 33.6ms | 54.3ms | 28.0/s |
+| 代码 500 | code_aware | 1,760 | 1,760 | 100.0% | 0.0% | 52.0ms | 79.7ms | 17.6/s |
+| 代码 1000 | code_aware | 3,510 | 3,510 | 100.0% | 0.0% | 78.5ms | 111.9ms | 11.4/s |
+| Git diff | diff | 551 | 146 | 26.5% | 73.5% | 13.1ms | 14.2ms | 74.9/s |
+| 图片 1024x768 -> 768px | image/jpeg | 510 | 510 | 100.0% | 0.0% | 25.4ms | 26.3ms | 39.1/s |
+| 图片 1024x768 -> 512px | image/jpeg | 510 | 255 | 50.0% | 50.0% | 21.7ms | 22.4ms | 45.7/s |
+| 图片 1536x1024 -> 768px | image/jpeg | 680 | 340 | 50.0% | 50.0% | 41.7ms | 42.9ms | 23.9/s |
+| Batch 8xJSON-100 | batch | 8,000 | 8 | 0.1% | 99.9% | 117.9ms | 125.6ms | 8.4/s |
+| Batch 8xJSON-1000 | batch | 80,000 | 8 | <0.1% | >99.9% | 386.9ms | 399.6ms | 2.6/s |
+
+并发补充：`bench-load` 峰值 QPS 为搜索 200 行 `86.1/s`、JSON-100 `82.6/s`、日志 500 行 `67.2/s`、图片 1536x1024 `59.9/s`、Batch 8xJSON `10.6/s`。多数场景 8 并发后吞吐进入平台期，16 并发主要增加 p95/p99 尾延迟。部署建议默认按 8 并发左右做单实例容量规划；如果需要更高吞吐，优先增加 worker/实例数，而不是继续提高单实例并发。
 
 ## 已知限制
 

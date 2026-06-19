@@ -115,6 +115,40 @@ def _compress(http: httpx.Client, content: str, context: str = "") -> CompressRe
     )
 
 
+# ── 数据集 loader 修正 ────────────────────────────────────────────────────────
+# headroom.evals.datasets.load_codesearchnet 用的 HF repo id "code_search_net"
+# 已失效（HF Hub 现在要求 namespace/name 格式），上游还没发新版修复，这里本地
+# 重新实现一份，用新 id "code-search-net/code_search_net"。
+
+def _load_codesearchnet_fixed(n: int = 100, language: str = "python", split: str = "test"):
+    from headroom.evals.core import EvalCase, EvalSuite
+    from datasets import load_dataset
+
+    ds = load_dataset("code-search-net/code_search_net", language, split=split)
+
+    cases = []
+    for i, item in enumerate(ds):
+        if len(cases) >= n:
+            break
+        code = item.get("func_code_string", "") or item.get("whole_func_string", "")
+        docstring = item.get("func_documentation_string", "")
+        if not code or not docstring:
+            continue
+        cases.append(EvalCase(
+            id=f"codesearchnet_{language}_{i}",
+            context=code,
+            query="What does this code do? Describe its functionality.",
+            ground_truth=docstring,
+            metadata={
+                "source": "CodeSearchNet",
+                "language": language,
+                "func_name": item.get("func_name", ""),
+                "repo": item.get("repository_name", ""),
+            },
+        ))
+    return EvalSuite(name=f"CodeSearchNet_{language}", cases=cases)
+
+
 # ── 单数据集评测 ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -170,6 +204,8 @@ def run_dataset(
     print(f"\n  加载 {dataset_name}...")
     if dataset_name == "tool_outputs":
         suite = load_tool_output_samples()
+    elif dataset_name == "codesearchnet":
+        suite = _load_codesearchnet_fixed(n=n)
     else:
         suite = load_dataset_by_name(dataset_name, n=n)
     cases = suite.cases[:n]
