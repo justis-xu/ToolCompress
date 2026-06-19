@@ -16,7 +16,7 @@ curl http://localhost:8010/health
 
 | 内容类型 | 自动识别条件 | 策略 | token 节省 |
 |---|---|---|---|
-| JSON 数组 / 对象 | 合法 JSON | SmartCrusher（schema+CSV 紧凑化） | **60~99%** |
+| JSON 数组 / 对象 | 合法 JSON | SmartCrusher（schema+CSV 紧凑化） | 60~99% |
 | 日志 / 构建输出 | 含 INFO/WARN/ERROR 前缀 | LogCompressor（保留错误行） | 75~92% |
 | grep / 搜索结果 | `file:line:content` 格式 | SearchCompressor（按相关性选行） | 80~92% |
 | 源代码 | 代码文件特征 | CodeAwareCompressor（AST 保留签名） | 30~60% |
