@@ -269,7 +269,7 @@ mise run verify
 python3.12 tests/verify/verify.py --url http://localhost:8010
 ```
 
-覆盖所有端点、内容类型、边界场景，共 84 个测试用例。
+覆盖所有端点、内容类型、边界场景，共 93 个测试用例。
 
 ### 性能测试
 
@@ -374,7 +374,7 @@ python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --load --con
 | JSON/工具调用 | smart_crusher | BFCL simple，`tests/evals/json_tool_calling/data/` | 100 | 74.7 | 58.7 | 22.2% | 99/100（99.0%） |
 | 代码 | code_aware | CodeSearchNet fact-QA，`tests/evals/code_factqa/data/` | 100 | 115.1 | 56.9 | 41.3% | 100/100（100.0%） |
 | 搜索结果 | search | headroom grep 输出，`tests/evals/search_deterministic/data/` | 100 | 827.0 | 229.0 | 71.1% | 97/100（97.0%） |
-| 日志 | log | LogHub 真实日志（7 个来源），`tests/evals/log_deterministic/data/` | 100 | 1458.6 | 461.8 | 66.8% | 确定性检查 75/100（异常模板 91.8% 保留）；QA judge 85/100 |
+| 日志 | log | LogHub 真实日志（7 个来源），`tests/evals/log_deterministic/data/` | 100 | 1458.6 | 461.8 | 66.8% |  85/100（85.0%）|
 | Git diff | diff | headroom commit（≥18% 压缩子集），`tests/evals/git_diff_judge/data/` | 50 | 6756.7 | 4119.3 | 35.2% | 50/50（100.0%） |
 | 图片 | image | TextVQA baseline20，`tests/evals/image_textvqa/data/` | 20 | 510.0 | 255.0 | 50.0% | 18/20（90.0%） |
 

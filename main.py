@@ -8,7 +8,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Any, Literal
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request
