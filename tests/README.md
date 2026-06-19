@@ -34,5 +34,3 @@
 - `eval_service.py`
   - 通用多数据集探索性评测工具（hotpotqa/msmarco/squad/codesearchnet/bfcl 等），
     非正式效果评测主结果，结果不进 README
-- `fidelity.py`
-  - 本地无 judge 的多策略 smoke / 回归检查
