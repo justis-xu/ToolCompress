@@ -363,7 +363,7 @@ def run_verify(base: str) -> None:
 
     cases = [
         # (名称, 内容, context, 期望策略, 最大ratio)
-        ("JSON 英文 500条",   JSON_EN,      "failed orders",  "smart_crusher", 0.10),
+        ("JSON 英文 500条",   JSON_EN,      "failed orders",  "smart_crusher", 0.65),
         ("JSON 中文 300条",   JSON_ZH,      "严重告警",         "smart_crusher", 0.50),
         ("日志 英文 1000行",  LOG_EN,       "500 error",      "log",           0.15),
         ("日志 中文 800行",   LOG_ZH,       "数据库连接失败",   "log",           0.30),

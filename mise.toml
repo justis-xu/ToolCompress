@@ -21,14 +21,6 @@ run = "python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --qua
 description = "并发压测（扫描 1→2→4→8→16 并发，60s/级）"
 run = "python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --load --concurrency 16 --duration 60"
 
-[tasks.eval]
-description = "端到端效果评测（hotpotqa+msmarco+codesearchnet，n=500，并发20）"
-run = "python3.12 tests/eval_service.py --url http://localhost:8010 --concurrency 20"
-
-[tasks.eval-full]
-description = "全量效果评测（所有有效数据集，n=500）"
-run = "python3.12 tests/eval_service.py --url http://localhost:8010 --datasets all -n 500 --concurrency 20"
-
 [tasks.bench-all]
 description = "性能 + 效果"
 run = "python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --duration 60 --all"

@@ -29,8 +29,3 @@
 - `evals/image_textvqa/`
   - `image` 在 TextVQA 上的评测
 
-其他：
-
-- `eval_service.py`
-  - 通用多数据集探索性评测工具（hotpotqa/msmarco/squad/codesearchnet/bfcl 等），
-    非正式效果评测主结果，结果不进 README
