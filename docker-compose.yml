@@ -1,0 +1,20 @@
+services:
+  tool-compress:
+    image: tool-compress:latest
+    environment:
+      - WORKERS=2
+      - PORT=8000
+      - MAX_CONTENT_LEN=500000
+      - MAX_BATCH=32
+      - MAX_IMAGE_DIM=768
+      - IMAGE_QUALITY=85
+    ports:
+      - "8010:8000"
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

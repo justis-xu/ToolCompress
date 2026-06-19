@@ -1,0 +1,26 @@
+[tools]
+python = "3.12"
+
+[tasks.verify]
+description = "功能验证（所有端点 + 边界情况）"
+run = "python3.12 tests/verify.py --url http://localhost:8010"
+
+[tasks.bench]
+description = "性能测试（60s/场景，显示 QPS）"
+run = "python3.12 tests/benchmark.py --url http://localhost:8010 --duration 60"
+
+[tasks.bench-quick]
+description = "快速性能测试（5s/场景）"
+run = "python3.12 tests/benchmark.py --url http://localhost:8010 --duration 5 --iterations 3"
+
+[tasks.bench-quality]
+description = "效果测试（关键词保留率）"
+run = "python3.12 tests/benchmark.py --url http://localhost:8010 --quality"
+
+[tasks.bench-load]
+description = "并发压测（扫描 1→2→4→8→16 并发，60s/级）"
+run = "python3.12 tests/benchmark.py --url http://localhost:8010 --load --concurrency 16 --duration 60"
+
+[tasks.bench-all]
+description = "性能 + 效果"
+run = "python3.12 tests/benchmark.py --url http://localhost:8010 --duration 60 --all"
