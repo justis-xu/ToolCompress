@@ -57,16 +57,19 @@ def main() -> None:
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--concurrency", type=int, default=20)
     parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--limit", type=int, default=0, help="只跑前 N 条（0=全量）")
     args = parser.parse_args()
 
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise SystemExit("需要 OPENAI_API_KEY（和可选 OPENAI_BASE_URL）")
     model = os.environ.get("EVAL_MODEL", "deepseek-v4-flash")
-    llm = openai.OpenAI(
-        api_key=os.environ["OPENAI_API_KEY"],
-        base_url=os.environ.get("OPENAI_BASE_URL"),
-    )
+    llm = openai.OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL"))
     http = httpx.Client(base_url=args.url, timeout=60)
     items = [json.loads(line) for line in DATA.read_text().splitlines() if line.strip()]
     cases = [case for item in items if (case := build_case(item)) is not None]
+    if args.limit:
+        cases = cases[:args.limit]
 
     def ask(code: str, checks: list[dict]) -> str:
         questions = "\n".join(
