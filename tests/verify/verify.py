@@ -3,7 +3,7 @@
 
 用法：
   mise run verify
-  python3.12 tests/verify.py --url http://localhost:8010
+  python3.12 tests/verify/verify.py --url http://localhost:8010
 """
 from __future__ import annotations
 
@@ -12,9 +12,13 @@ import base64
 import json
 import sys
 from io import BytesIO
+from pathlib import Path
 
 import httpx
 from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "benchmark"))
+from benchmark import DIFF_30 as BENCH_DIFF_30, DIFF_100 as BENCH_DIFF_100
 
 DEFAULT_URL = "http://localhost:8010"
 
@@ -368,6 +372,8 @@ def run_verify(base: str) -> None:
         ("搜索 英文 500行",   SEARCH_EN,    "ValueError",     None,            0.20),
         ("搜索 中文 400行",   SEARCH_ZH,    "认证失败",         None,            0.30),
         ("Git diff",          GIT_DIFF,     "auth change",    "diff",          0.80),
+        ("Benchmark diff 30", BENCH_DIFF_30,"auth change",    "diff",          0.90),
+        ("Benchmark diff 100",BENCH_DIFF_100,"auth change",   "diff",          0.90),
         ("HTML",              HTML_CONTENT, "machine learning","html",         0.80),
     ]
 
@@ -447,6 +453,7 @@ def run_verify(base: str) -> None:
 
     d = compress_image(client, img_b64)
     check("图片压缩 → 200",          True)
+    check("默认 mode=full_low",      d.get("mode") == "full_low")
     check("media_type = image/jpeg", d.get("media_type") == "image/jpeg")
     check("compressed 非空",         len(d.get("compressed", "")) > 0)
     check("compressed_size < original_size",
@@ -462,11 +469,20 @@ def run_verify(base: str) -> None:
     # max_dimension 参数
     d512 = compress_image(client, img_b64, max_dimension=512)
     d256 = compress_image(client, img_b64, max_dimension=256)
-    check("max_dimension=512 比默认更小",
-          d512["compressed_size"] < d["compressed_size"],
+    check("max_dimension=512 与默认 full_low 一致",
+          d512["compressed_size"] == d["compressed_size"],
           f"512={d512['compressed_size']} default={d['compressed_size']}")
     check("max_dimension=256 比512更小",
           d256["compressed_size"] < d512["compressed_size"])
+
+    dkeep = compress_image(client, img_b64, mode="preserve", max_dimension=768, quality=85)
+    check("显式 preserve mode 回显", dkeep.get("mode") == "preserve")
+    check("默认 full_low 比 preserve token 更少",
+          d["compressed_tokens"] < dkeep["compressed_tokens"],
+          f"full_low={d['compressed_tokens']} preserve={dkeep['compressed_tokens']}")
+    check("默认 full_low 比 preserve 文件更小",
+          d["compressed_size"] < dkeep["compressed_size"],
+          f"full_low={d['compressed_size']} preserve={dkeep['compressed_size']}")
 
     # quality 参数
     dq30 = compress_image(client, img_b64, quality=30)
@@ -498,12 +514,13 @@ def run_verify(base: str) -> None:
     r = client.post("/compress/image/batch", json={"items": [
         {"image": img_b64,   "max_dimension": 768},
         {"image": img_b64_2, "max_dimension": 512},
-        {"image": img_b64,   "max_dimension": 256, "quality": 60},
+        {"image": img_b64,   "max_dimension": 256, "quality": 60, "mode": "full_low"},
     ]})
     check("图片 batch → 200", r.status_code == 200)
     bd = r.json()
     check("results 数量正确", len(bd.get("results", [])) == 3)
     check("每条都有 compressed", all("compressed" in x for x in bd.get("results", [])))
+    check("batch 支持 full_low", bd.get("results", [None, None, {}])[2].get("mode") == "full_low")
     sizes = [x["compressed_size"] for x in bd.get("results", [])]
     check("第3张（256px）最小", sizes[2] < sizes[0], f"sizes={sizes}")
 

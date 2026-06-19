@@ -107,6 +107,38 @@ def _make_code(n: int) -> str:
         for i in range(n)
     ])
 
+
+def _make_diff(n_hunks: int, files: int = 1) -> str:
+    parts = []
+    hunks_per_file = max(1, n_hunks // max(files, 1))
+    extra = n_hunks % max(files, 1)
+    line_no = 1
+    for file_idx in range(files):
+        hunk_count = hunks_per_file + (1 if file_idx < extra else 0)
+        if hunk_count == 0:
+            continue
+        path = f"src/module_{file_idx}/handler.py"
+        parts.extend([
+            f"diff --git a/{path} b/{path}",
+            f"index {file_idx:07x}..{file_idx + 1:07x} 100644",
+            f"--- a/{path}",
+            f"+++ b/{path}",
+        ])
+        for h in range(hunk_count):
+            parts.append(f"@@ -{line_no},7 +{line_no},9 @@ def process_{file_idx}_{h}(payload):")
+            parts.extend([
+                "     if not payload:",
+                "         return None",
+                "-    old_logic(payload)",
+                "+    normalized = normalize_payload(payload)",
+                "+    validate_payload(normalized)",
+                "+    new_logic(normalized)",
+                "     audit_event(payload)",
+                "     return True",
+            ])
+            line_no += 11
+    return "\n".join(parts)
+
 JSON_100  = _make_json(100)
 JSON_500  = _make_json(500)
 JSON_1000 = _make_json(1000)
@@ -122,6 +154,9 @@ SEARCH_RESULTS_1000 = _make_search(1000)
 CODE_200  = _make_code(30)
 CODE_500  = _make_code(70)
 CODE_1000 = _make_code(140)
+
+DIFF_30   = _make_diff(30, files=2)
+DIFF_100  = _make_diff(100, files=5)
 
 ZH_JSON = json.dumps([
     {"序号": i, "状态": "错误" if i % 10 == 0 else "正常",
@@ -168,20 +203,7 @@ ZH_CODE = "\n".join([
 ])
 
 
-GIT_DIFF = "\n".join([
-    "diff --git a/src/auth.py b/src/auth.py",
-    "index 1234567..abcdefg 100644",
-    "--- a/src/auth.py",
-    "+++ b/src/auth.py",
-] + [
-    f"@@ -{i*10},7 +{i*10},8 @@\n"
-    + "\n".join(
-        f" {'    return True' if j % 3 == 0 else f'    process({j})'}"
-        for j in range(6)
-    )
-    + f"\n-    old_logic_{i}()\n+    new_logic_{i}()\n+    log_change_{i}()"
-    for i in range(30)
-])
+GIT_DIFF = DIFF_30
 
 
 def _make_image_b64(width: int = 1024, height: int = 768) -> str:
@@ -251,7 +273,8 @@ def run_perf(base: str, n: int, duration: float = 0) -> None:
         ("代码 1000行（英文）",          "/compress",       {"content": CODE_1000,           "context": "process function"}),
         ("代码（中文注释）",             "/compress",       {"content": ZH_CODE,             "context": "处理请求"}),
         ("搜索（中英混写）",             "/compress",       {"content": MIXED_SEARCH,        "context": "认证失败 ERROR"}),
-        ("Git diff 30 hunks",            "/compress",       {"content": GIT_DIFF,            "context": "auth logic change"}),
+        ("Git diff 30 hunks",            "/compress",       {"content": DIFF_30,             "context": "auth logic change"}),
+        ("Git diff 100 hunks",           "/compress",       {"content": DIFF_100,            "context": "auth logic change"}),
         ("图片 1024×768 → 768px",       "/compress/image", {"image": image_b64}),
         ("图片 1024×768 → 512px",       "/compress/image", {"image": image_b64, "max_dimension": 512}),
         ("图片 1536×1024 → 768px",      "/compress/image", {"image": image_b64_lg}),
@@ -324,15 +347,22 @@ def bench_concurrent(base: str, endpoint: str, payload: dict, concurrency: int, 
     }
 
 
-def run_load(base: str, max_concurrency: int, duration: float) -> None:
-    """并发扫描：从 1 扫到 max_concurrency（翻倍步进），找峰值 QPS 和延迟拐点。"""
-    levels = []
-    c = 1
-    while c <= max_concurrency:
-        levels.append(c)
-        c *= 2
-    if levels[-1] != max_concurrency:
-        levels.append(max_concurrency)
+def run_load(base: str, max_concurrency: int, duration: float, only: str | None = None, fixed: bool = False) -> None:
+    """并发扫描：从 1 扫到 max_concurrency（翻倍步进），找峰值 QPS 和延迟拐点。
+
+    only: 逗号分隔的场景名子串过滤，只跑名字里包含其中之一的场景。
+    fixed: 跳过 1→2→4→...的扫描，只在 max_concurrency 这一级跑（单轮快速验证用）。
+    """
+    if fixed:
+        levels = [max_concurrency]
+    else:
+        levels = []
+        c = 1
+        while c <= max_concurrency:
+            levels.append(c)
+            c *= 2
+        if levels[-1] != max_concurrency:
+            levels.append(max_concurrency)
 
     image_b64_load = _make_image_b64(1536, 1024)
     load_scenarios = [
@@ -346,9 +376,15 @@ def run_load(base: str, max_concurrency: int, duration: float) -> None:
         ("搜索-1000行",   "/compress",       {"content": SEARCH_RESULTS_1000, "context": "ValueError"}),
         ("代码-200行",    "/compress",       {"content": CODE_200,            "context": "process function"}),
         ("代码-1000行",   "/compress",       {"content": CODE_1000,           "context": "process function"}),
+        ("Diff-30hunks",  "/compress",       {"content": DIFF_30,             "context": "auth logic change"}),
+        ("Diff-100hunks", "/compress",       {"content": DIFF_100,            "context": "auth logic change"}),
         ("图片 1536×1024","/compress/image", {"image": image_b64_load}),
         ("Batch 8×JSON",  "/compress/batch", {"items": [{"content": JSON_100, "context": "find errors"}] * 8}),
     ]
+
+    if only:
+        keywords = [k.strip() for k in only.split(",") if k.strip()]
+        load_scenarios = [s for s in load_scenarios if any(k in s[0] for k in keywords)]
 
     print(f"\n{'='*100}")
     print(f"并发压测  {base}  (每级 {duration:.0f}s，并发: {' → '.join(str(l) for l in levels)})")
@@ -525,6 +561,8 @@ if __name__ == "__main__":
     parser.add_argument("--duration",    type=float, default=DEFAULT_DURATION, help="每个场景至少跑多少秒（0=只跑 --iterations 次）")
     parser.add_argument("--load",        action="store_true", help="并发压测：扫描不同并发数找峰值 QPS")
     parser.add_argument("--concurrency", type=int, default=16, help="并发压测最大并发数（默认 16，从 1 翻倍扫到此值）")
+    parser.add_argument("--only",        default=None, help="只跑名字包含这些关键词的场景（逗号分隔），配合 --load 用")
+    parser.add_argument("--fixed",       action="store_true", help="配合 --load：跳过 1→2→4...扫描，只在 --concurrency 这一级跑")
     parser.add_argument("--quality",     action="store_true", help="效果测试（本地，无需 HTTP）")
     parser.add_argument("--eval",        action="store_true", help="LLM 效果测试（需 ANTHROPIC_API_KEY）")
     parser.add_argument("--all",         action="store_true", help="性能 + 效果都跑")
@@ -534,7 +572,7 @@ if __name__ == "__main__":
     if args.eval:
         run_eval_llm()
     elif args.load:
-        run_load(args.url, args.concurrency, args.duration)
+        run_load(args.url, args.concurrency, args.duration, only=args.only, fixed=args.fixed)
     elif args.quality or args.zh:
         run_quality(args.url)
     elif args.all:

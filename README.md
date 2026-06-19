@@ -132,7 +132,7 @@ curl http://localhost:8010/health
 **请求**
 
 ```json
-{"image": "<base64>", "max_dimension": 768, "quality": 85}
+{"image": "<base64>", "mode": "full_low", "max_dimension": 512, "quality": 60}
 ```
 
 > `image` 为图片的 base64 字符串（支持带或不带 `data:image/...;base64,` 前缀）。手动测试可用以下命令生成一张测试图片的 base64：
@@ -157,38 +157,48 @@ curl http://localhost:8010/health
 | 字段 | 类型 | 必填 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
 | `image` | string | 是 | — | — | Base64 图片，支持带或不带 `data:image/...;base64,` 前缀 |
-| `max_dimension` | int | 否 | 768 | 64~2048 | 最长边限制（px），超出按比例缩放 |
-| `quality` | int | 否 | 85 | 10~95 | JPEG 压缩质量 |
+| `mode` | string | 否 | `full_low` | `preserve` / `full_low` | 默认使用 `full_low`，优先减少视觉 token |
+| `max_dimension` | int | 否 | 512 | 64~2048 | 最长边限制（px），超出按比例缩放 |
+| `quality` | int | 否 | 60 | 10~95 | JPEG 压缩质量 |
+
+- `full_low`
+  - 当前默认模式。把最长边限制在 `512px` 以内，并把 JPEG 质量限制在 `60` 以内，目标是尽快落到更低的视觉 tile 档位，优先节省 token。
+- `preserve`
+  - 兼容保留的显式模式。只有在明确需要更保守的 OCR/细节保真时才建议手动指定。
 
 **响应**
 
 ```json
 {
+  "mode": "full_low",
   "compressed": "<base64 JPEG>",
   "media_type": "image/jpeg",
   "original_size": 102400,
   "compressed_size": 15360,
   "ratio": 0.15,
-  "original_tokens": 765,
+  "original_tokens": 510,
   "compressed_tokens": 255
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
+| `mode` | string | 实际生效的图片压缩模式 |
 | `compressed` | string | 压缩后 JPEG 的 base64 |
 | `media_type` | string | 固定为 `image/jpeg` |
 | `original_size` | int | 原始字节数 |
 | `compressed_size` | int | 压缩后字节数 |
 | `ratio` | float | `compressed_size / original_size` |
-| `original_tokens` | int | 原始图片 token 估算（按 512px tile 计算） |
+| `original_tokens` | int | 原始图片 token 估算（统一按 `170 + 85 * ceil(w/512) * ceil(h/512)` 计算） |
 | `compressed_tokens` | int | 压缩后 token 估算 |
+
+说明：这里的 `original_tokens / compressed_tokens` 是统一的本地 tile 估算，用来衡量“压缩前后视觉输入规模变化”，不是 OpenAI / Anthropic / Gemini 的官方原生计费值。
 
 ---
 
 ### POST /compress/image/batch — 批量图片压缩
 
-最多 32 条，并发处理（受 `IMAGE_CONCURRENCY` 控制）。请求格式同 `/compress/image` 的批量包装，完整示例见 `tests/verify.py`（section 8）。
+最多 32 条，并发处理（受 `IMAGE_CONCURRENCY` 控制）。请求格式同 `/compress/image` 的批量包装，完整示例见 `tests/verify/verify.py`（section 8）。
 
 ```json
 {
@@ -255,7 +265,7 @@ pip install httpx Pillow
 ```bash
 mise run verify
 # 或
-python3.12 tests/verify.py --url http://localhost:8010
+python3.12 tests/verify/verify.py --url http://localhost:8010
 ```
 
 覆盖所有端点、内容类型、边界场景，共 84 个测试用例。
@@ -308,44 +318,68 @@ mise run verify
 
 ### 远端性能测试
 
-目标服务器：`62.234.152.102`
-
-部署：已使用 `ubuntu@62.234.152.102` 将当前工作区同步到 `/home/ubuntu/ToolCompress`，停止旧 ToolCompress 容器并通过 `docker-compose up -d --build` 重启，远端 `/health` 返回 `{"status":"ok"}`。
-
 命令：
 
 ```bash
-python3.12 tests/benchmark.py --url http://localhost:8010 --duration 60
-python3.12 tests/benchmark.py --url http://localhost:8010 --load --concurrency 16 --duration 60
+python3.12 tests/benchmark/benchmark.py --url http://localhost:8010 --load --concurrency 8 --duration 60
 ```
 
-结果：
+本次结果取 `bench-load` 中的 **8 并发** 数据。Payload 覆盖三档规模（100 / 500 / 1000 条），模拟真实工具调用大小；图片只看 token in/out，不引用字节压缩率。
+
+**实测吞吐（Linux 2核 2worker，并发8）**
 
 | 场景 | 策略 | token in | token out | 压缩至 | 节省 | p50 | p95 | QPS |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| JSON 100 | smart_crusher | 1,000 | 1 | 0.1% | 99.9% | 16.5ms | 17.7ms | 59.9/s |
-| JSON 500 | smart_crusher | 5,000 | 1 | <0.1% | >99.9% | 31.1ms | 32.9ms | 31.9/s |
-| JSON 1000 | smart_crusher | 10,000 | 1 | <0.1% | >99.9% | 50.0ms | 52.8ms | 19.8/s |
-| JSON 中文 | smart_crusher | 2,494 | 823 | 33.0% | 67.0% | 16.3ms | 17.4ms | 60.4/s |
-| 日志 500 | log | 3,500 | 484 | 13.8% | 86.2% | 25.6ms | 27.3ms | 38.6/s |
-| 日志 1000 | log | 7,000 | 484 | 6.9% | 93.1% | 36.3ms | 38.1ms | 27.3/s |
-| 日志 2000 | log | 14,000 | 484 | 3.5% | 96.5% | 59.2ms | 62.1ms | 16.8/s |
-| 日志 中文 | log | 3,702 | 853 | 23.0% | 77.0% | 20.2ms | 21.5ms | 48.8/s |
-| 搜索 200 | search | 680 | 160 | 23.5% | 76.5% | 14.5ms | 15.3ms | 68.0/s |
-| 搜索 500 | search | 1,700 | 160 | 9.4% | 90.6% | 16.8ms | 17.7ms | 58.9/s |
-| 搜索 1000 | search | 3,400 | 160 | 4.7% | 95.3% | 20.5ms | 22.4ms | 48.0/s |
-| 搜索 中文 | search | 692 | 51 | 7.4% | 92.6% | 14.0ms | 15.0ms | 70.1/s |
-| 代码 200 | code_aware | 760 | 760 | 100.0% | 0.0% | 33.6ms | 54.3ms | 28.0/s |
-| 代码 500 | code_aware | 1,760 | 1,760 | 100.0% | 0.0% | 52.0ms | 79.7ms | 17.6/s |
-| 代码 1000 | code_aware | 3,510 | 3,510 | 100.0% | 0.0% | 78.5ms | 111.9ms | 11.4/s |
-| Git diff | diff | 551 | 146 | 26.5% | 73.5% | 13.1ms | 14.2ms | 74.9/s |
-| 图片 1024x768 -> 768px | image/jpeg | 510 | 510 | 100.0% | 0.0% | 25.4ms | 26.3ms | 39.1/s |
-| 图片 1024x768 -> 512px | image/jpeg | 510 | 255 | 50.0% | 50.0% | 21.7ms | 22.4ms | 45.7/s |
-| 图片 1536x1024 -> 768px | image/jpeg | 680 | 340 | 50.0% | 50.0% | 41.7ms | 42.9ms | 23.9/s |
-| Batch 8xJSON-100 | batch | 8,000 | 8 | 0.1% | 99.9% | 117.9ms | 125.6ms | 8.4/s |
-| Batch 8xJSON-1000 | batch | 80,000 | 8 | <0.1% | >99.9% | 386.9ms | 399.6ms | 2.6/s |
+| JSON-100 | smart_crusher | 1,000 | 511 | 51.1% | 48.9% | 99.5ms | 138.2ms | 79.2/s |
+| JSON-500 | smart_crusher | 5,000 | 2,511 | 50.2% | 49.8% | 166.1ms | 250.4ms | 46.6/s |
+| JSON-1000 | smart_crusher | 10,000 | 5,011 | 50.1% | 49.9% | 257.1ms | 377.4ms | 30.1/s |
+| 日志-500 | log | 4,500 | 618 | 13.7% | 86.3% | 123.2ms | 204.0ms | 63.6/s |
+| 日志-1000 | log | 9,000 | 618 | 6.9% | 93.1% | 150.2ms | 244.5ms | 51.8/s |
+| 日志-2000 | log | 18,000 | 618 | 3.4% | 96.6% | 209.3ms | 307.2ms | 37.2/s |
+| 搜索-200 | search | 880 | 190 | 21.6% | 78.4% | 102.3ms | 138.8ms | 77.4/s |
+| 搜索-1000 | search | 4,400 | 190 | 4.3% | 95.7% | 141.8ms | 211.5ms | 54.7/s |
+| 代码-200 | code_aware | 2,110 | 740 | 35.1% | 64.9% | 214.3ms | 455.2ms | 29.8/s |
+| 代码-1000 | code_aware | 9,810 | 3,380 | 34.4% | 65.6% | 673.8ms | 1,091.3ms | 10.7/s |
+| 图片 1536x1024 | image/jpeg | 680 | 255 | 37.5% | 62.5% | 178.4ms | 192.6ms | 63.1/s |
+| Batch 8xJSON-100 | batch | 8,000 | 4,088 | 51.1% | 48.9% | 947.7ms | 1,089.3ms | 10.2/s |
+| Diff-30hunks | diff | 802 | 554 | 69.1% | 30.9% | 92.0ms | 133.7ms | 87.3/s |
+| Diff-100hunks | diff | 2,655 | 1,358 | 51.1% | 48.9% | 96.1ms | 145.0ms | 81.9/s |
 
-并发补充：`bench-load` 峰值 QPS 为搜索 200 行 `86.1/s`、JSON-100 `82.6/s`、日志 500 行 `67.2/s`、图片 1536x1024 `59.9/s`、Batch 8xJSON `10.6/s`。多数场景 8 并发后吞吐进入平台期，16 并发主要增加 p95/p99 尾延迟。部署建议默认按 8 并发左右做单实例容量规划；如果需要更高吞吐，优先增加 worker/实例数，而不是继续提高单实例并发。
+并发结论：多数场景在 8 并发附近进入吞吐平台期；16 并发吞吐提升很小，但 p95/p99 尾延迟明显上升。2核/2worker 单实例建议按 8 并发左右做容量规划；如果需要更高吞吐，优先增加 worker 或实例数，而不是继续提高单实例并发。
+
+> Diff 这两行用的是 `tests/benchmark/benchmark.py` 里的合成 payload（`DIFF_30`/`DIFF_100`），压缩率较高（30.9%/48.9%）；真实 commit 的代表性压缩率明显更低（见下方"效果测评"小节的真实 git diff 数据集结果），合成 diff payload 的上下文行占比偏高，不能代表真实效果。
+
+## 效果测评
+
+方法：统一采用 before/after 对比。能做客观判分的场景优先用 ground truth；不适合直接问模型的场景，改用确定性保真检查。纯文本 passthrough（如 hotpotqa/msmarco/squad）不计入压缩效果主结果。
+
+评测脚本与数据集：
+
+- `JSON / smart_crusher`：`tests/evals/json_tool_calling/eval.py` + `tests/evals/json_tool_calling/data/`
+- `代码 / code_aware`：`tests/evals/code_factqa/eval.py` + `tests/evals/code_factqa/data/`
+- `搜索 / search`：`tests/evals/search_deterministic/eval.py` + `tests/evals/search_deterministic/data/`
+- `日志 / log`：`tests/evals/log_deterministic/eval.py`（确定性检查）+ `tests/evals/log_qa_judge/eval.py`（QA judge），均使用 LogHub 公开数据集真实日志
+- `Git diff / diff`：`tests/evals/git_diff_judge/eval.py` + `tests/evals/git_diff_judge/data/`（按真实压缩率筛选出的 ≥18% 子集，见下方说明）
+- `图片 / image`：`tests/evals/image_textvqa/eval.py` + `tests/evals/image_textvqa/data/`
+
+目录说明见：
+
+- `tests/README.md`
+- `tests/README.md`
+
+每个评测自成一个目录：`tests/evals/<场景>/eval.py` + `tests/evals/<场景>/data/`，数据集不跨目录共享。
+
+| 场景 | 压缩策略 | 数据集/Payload | n | 平均压缩前 token | 平均压缩后 token | 减少比例 | 压缩后准确率 |
+|---|---|---|---:|---:|---:|---:|---|
+| JSON/工具调用 | smart_crusher | BFCL simple，`tests/evals/json_tool_calling/data/` | 100 | 74.7 | 58.7 | 22.2% | 99/100（99.0%） |
+| 代码 | code_aware | CodeSearchNet fact-QA，`tests/evals/code_factqa/data/` | 100 | 115.1 | 56.9 | 41.3% | 100/100（100.0%） |
+| 搜索结果 | search | headroom grep 输出，`tests/evals/search_deterministic/data/` | 100 | 827.0 | 229.0 | 71.1% | 97/100（97.0%） |
+| 日志 | log | LogHub 真实日志（7 个来源），`tests/evals/log_deterministic/data/` | 100 | 1458.6 | 461.8 | 66.8% | 确定性检查 75/100（异常模板 91.8% 保留）；QA judge 85/100 |
+| Git diff | diff | headroom commit（≥18% 压缩子集），`tests/evals/git_diff_judge/data/` | 50 | 6756.7 | 4119.3 | 35.2% | 50/50（100.0%） |
+| 图片 | image | TextVQA baseline20，`tests/evals/image_textvqa/data/` | 20 | 510.0 | 255.0 | 50.0% | 18/20（90.0%） |
+
+各场景的判分口径、数据集来源、筛选规则都写在对应测试脚本头部，不再在 README 重复展开。
+
 
 ## 已知限制
 
@@ -354,3 +388,5 @@ python3.12 tests/benchmark.py --url http://localhost:8010 --load --concurrency 1
 - **CCR 占位符**：JSON 中超长字符串字段（>250B）会预截断至 80 字符再压缩；若 headroom 仍产生 `<<ccr:>>` 占位符，服务自动回退透传并记录 ERROR 日志
 - **AVX 依赖**：headroom Rust core 需要 AVX/AVX2 指令集，部分旧 CPU 或虚拟化环境不支持，可设 `HEADROOM_REQUIRE_RUST_CORE=false` 降级
 - **中文 context 匹配**：Rust core 按空格分词，服务侧已对 context 做 CJK bigram 展开以提升中文关键词命中；content 本身不做此处理（否则会污染输出）
+- **search 预算耗尽时丢整文件**：`SearchCompressor` 全局匹配预算用完后，后面的文件会被整个丢弃且不提示（不同于单文件内截断会显示"+N more matches"）
+- **log 预算耗尽时按顺序截断**：`LogCompressor` 异常行超出 token 预算时按时间顺序截断，不保证保留所有不同的错误模板——常见错误反复出现时会被优先保留，出现次数少的罕见错误类型可能被整体丢弃，且不会提示具体丢的是哪种

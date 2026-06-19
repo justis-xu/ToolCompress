@@ -8,6 +8,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request
@@ -20,8 +21,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 MAX_CONTENT_LEN   = int(os.getenv("MAX_CONTENT_LEN", str(500_000)))
 MAX_CONTEXT_LEN   = int(os.getenv("MAX_CONTEXT_LEN", "2000"))
 MAX_BATCH         = int(os.getenv("MAX_BATCH", "32"))
-DEFAULT_IMAGE_DIM     = int(os.getenv("MAX_IMAGE_DIM", "768"))
-DEFAULT_IMAGE_QUALITY = int(os.getenv("IMAGE_QUALITY", "85"))
+DEFAULT_IMAGE_DIM     = int(os.getenv("MAX_IMAGE_DIM", "512"))
+DEFAULT_IMAGE_QUALITY = int(os.getenv("IMAGE_QUALITY", "60"))
+FULL_LOW_IMAGE_DIM    = int(os.getenv("FULL_LOW_IMAGE_DIM", "512"))
+FULL_LOW_IMAGE_QUALITY = int(os.getenv("FULL_LOW_IMAGE_QUALITY", "60"))
 SLOW_MS           = int(os.getenv("SLOW_MS", "500"))
 IMAGE_CONCURRENCY = int(os.getenv("IMAGE_CONCURRENCY", "2"))
 
@@ -50,14 +53,8 @@ _NON_WHITESPACE_WORD_BOUNDARY_RE = re.compile(r"\\n|[,:;]")
 
 
 def _count_text_tokens(text: str) -> int:
-    """CJK-aware token估算：一次正则替换，不逐字符遍历。
-
-    SmartCrusher对大批量同构JSON数组会输出"压缩表格"格式——行与行之间用的是
-    字面意义上的"\\n"两个字符（反斜杠+n），不是真正的换行符，逗号/冒号分隔
-    字段也不是空白字符。原来只按真实空白字符split()，这种几乎没有空格的
-    blob会被整段当成1个词，导致compressed_tokens严重低估、ratio虚低（实测：
-    100条同构JSON记录，真实token数约512，旧逻辑算出来是1）。这里把字面\\n
-    和逗号/冒号/分号也当成分词边界，跟真实空白字符一起处理。
+    """
+    CJK-aware token估算：一次正则替换，不逐字符遍历。
     """
     cjk_chars = sum(len(m) for m in _CJK_RE.findall(text))
     normalized = _NON_WHITESPACE_WORD_BOUNDARY_RE.sub(" ", _CJK_RE.sub(" ", text))
@@ -69,37 +66,10 @@ _router = None
 _image_sem: anyio.Semaphore | None = None
 
 def _patch_is_mixed_content() -> None:
-    r"""阻止 ContentRouter 把真实内容误判成 'mixed'——一旦判成 mixed，内容会
+    """
+    阻止 ContentRouter 把真实内容误判成 'mixed'——一旦判成 mixed，内容会
     几乎原样透传，而不会真正走到对应的专用压缩器
     (HTMLExtractor / LogCompressor / DiffCompressor)。
-
-    headroom 的 is_mixed_content() 只要命中下面4个粗糙正则指标里的2个，就判
-    mixed：{代码块```、以'{'/'['开头的行、大写开头的"散文"模式、grep风格的
-    "file:line:"结果}。这是一类*通用*的误判，不是只对某一种内容类型，做这
-    次评测的过程中独立发现了3次：
-
-    - 整页HTML：内嵌的<script>{...}</script> JSON-LD（命中json_blocks）+
-      任意一段正文文字（命中prose）。Scrapinghub benchmark实测：5个样本里
-      4个落到strategy=mixed，ratio≈1.0（HTMLExtractor根本没跑）。
-    - 真实日志文件：_SEARCH_RESULT_PATTERN（r"^\S+:\d+:"，本意是抓grep的
-      "file:line:"格式）误判普通时间戳，比如"...21:27:09"（\S+先吞掉文件名
-      /日期前缀，然后":27:"刚好满足":\d+:"）+ prose（随便一句日志描述都会
-      命中）。LogHub的OpenStack样本实测：该保留的WARNING/Exception行在
-      mixed策略下recall=0%（ratio≈0.014）。
-    - 真实git diff：commit message里的正文文字 + hunk里以`{`/`}`开头的代码
-      行（命中json_blocks）。从这个仓库自己的git log里抽3个真实commit测，
-      2/3落到strategy=mixed，ratio≈1.0（DiffCompressor根本没跑）。
-
-    修复思路：不再一种内容类型打一个补丁，而是先依次问所有专用检测器
-    （html/diff/log/search）；只要有一个给出高置信度，那就是一个真实、具
-    体的类型——绝不让粗糙的mixed启发式覆盖一个有把握的具体判断。这个修复
-    同时也覆盖了_detect_content()本身——它在Linux上默认走Rust核心后端（不
-    是headroom纯Python的content_detector模块），而Rust后端对日志时间戳有
-    完全一样的SEARCH_RESULTS误判，跟用哪个后端无关。
-
-    这里直接打补丁（不改headroom上游源码），因为ToolCompress用pip锁定了
-    headroom-ai==0.26.0这个版本；改这个仓库的源码不会影响已经装好的那个包，
-    除非等它发新版本。
     """
     import headroom.transforms.content_router as _cr
     from headroom.transforms.content_detector import (
@@ -133,24 +103,6 @@ def _patch_is_mixed_content() -> None:
 
     _cr.is_mixed_content = patched_is_mixed
 
-    # is_mixed_content这一关过了之后，还要防一手_detect_content()本身（Linux
-    # 上默认是Rust核心后端）独立产生的误判。只重新判定两种"弱"结果
-    # （SEARCH_RESULTS，跟上面同一个误判正则；PLAIN_TEXT，兜底分类）——绝不
-    # 覆盖一个已经是具体类型的结果（比如JSON_ARRAY），避免好心办坏事，引入
-    # 新的误判。
-    #
-    # 有一个例外：SOURCE_CODE。对一个真实代码库跑grep/rg，每一行内容本身就
-    # 是看起来合法的代码（"file.py:42:import json"），所以Rust会很confident
-    # 地判成source_code（实测验证过：在容器里对一段真实`grep -rn import`的
-    # 输出，confidence=1.0）——但headroom自己的CodeAwareCompressor没法对一
-    # 个每行都粘着"file:line:"前缀的内容块做AST解析，会解析失败回退成原样
-    # 透传（ratio=1.0）；而专门做这件事的SearchCompressor就是为了处理这种
-    # 格式设计的（它自己的测试套件里断言的例子就是
-    # "src/main.py:42:def process_data(items):"）。Python版本search检测器
-    # 的正则（行首r"^\S+:\d+:"，且要求30%以上的行命中）本身就很窄，误报率
-    # 低，所以置信度足够高时可以放心拿它去覆盖source_code的判断——这里用了
-    # 比下面通用阈值(0.6)更严格的门槛(0.9)，因为这是唯一一处要去覆盖"非弱"
-    # 分类结果的情况，要格外小心。
     _OVERRIDABLE = {_cr.ContentType.SEARCH_RESULTS, _cr.ContentType.PLAIN_TEXT}
     original_detect = _cr._detect_content
 
@@ -229,11 +181,13 @@ class TextBatchResponse(BaseModel):
 
 class ImageCompressRequest(BaseModel):
     image: str         = Field(..., description="Base64-encoded image (with or without data: prefix)")
+    mode: Literal["preserve", "full_low"] = Field(default="full_low")
     max_dimension: int = Field(default=DEFAULT_IMAGE_DIM, ge=64, le=2048)
     quality: int       = Field(default=DEFAULT_IMAGE_QUALITY, ge=10, le=95)
 
 
 class ImageCompressResult(BaseModel):
+    mode: str
     compressed: str
     media_type: str
     original_size: int
@@ -333,7 +287,7 @@ def _decode_image(image_b64: str) -> bytes:
         raise ValueError(f"invalid base64: {e}") from e
 
 
-def _compress_image_sync(image_b64: str, max_dimension: int, quality: int) -> ImageCompressResult:
+def _compress_image_sync(image_b64: str, mode: str, max_dimension: int, quality: int) -> ImageCompressResult:
     t0 = time.perf_counter()
     raw = _decode_image(image_b64)
     try:
@@ -343,6 +297,9 @@ def _compress_image_sync(image_b64: str, max_dimension: int, quality: int) -> Im
 
     orig_w, orig_h = img.size
     original_tokens = _estimate_tokens(orig_w, orig_h)
+    if mode == "full_low":
+        max_dimension = min(max_dimension, FULL_LOW_IMAGE_DIM)
+        quality = min(quality, FULL_LOW_IMAGE_QUALITY)
 
     if orig_w > max_dimension or orig_h > max_dimension:
         scale = max_dimension / max(orig_w, orig_h)
@@ -362,12 +319,13 @@ def _compress_image_sync(image_b64: str, max_dimension: int, quality: int) -> Im
     ms = (time.perf_counter() - t0) * 1000
     ratio = round(len(compressed_bytes) / max(1, len(raw)), 4)
     logger.info(
-        "image %dx%d→%dx%d ratio=%.2f orig=%dB comp=%dB tokens=%d→%d %.0fms",
-        orig_w, orig_h, new_w, new_h, ratio,
+        "image mode=%s %dx%d→%dx%d q=%d ratio=%.2f orig=%dB comp=%dB tokens=%d→%d %.0fms",
+        mode, orig_w, orig_h, new_w, new_h, quality, ratio,
         len(raw), len(compressed_bytes),
         original_tokens, compressed_tokens, ms,
     )
     return ImageCompressResult(
+        mode=mode,
         compressed=base64.b64encode(compressed_bytes).decode(),
         media_type="image/jpeg",
         original_size=len(raw),
@@ -428,7 +386,7 @@ async def compress_image(req: ImageCompressRequest):
     try:
         async with _image_sem:
             return await anyio.to_thread.run_sync(
-                lambda: _compress_image_sync(req.image, req.max_dimension, req.quality), cancellable=True
+                lambda: _compress_image_sync(req.image, req.mode, req.max_dimension, req.quality), cancellable=True
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -442,7 +400,7 @@ async def compress_image_batch(req: ImageBatchRequest):
     async def _one(item: ImageCompressRequest) -> ImageCompressResult:
         async with _image_sem:
             return await anyio.to_thread.run_sync(
-                lambda: _compress_image_sync(item.image, item.max_dimension, item.quality), cancellable=True
+                lambda: _compress_image_sync(item.image, item.mode, item.max_dimension, item.quality), cancellable=True
             )
 
     try:
