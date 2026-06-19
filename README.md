@@ -34,31 +34,48 @@ curl http://localhost:8010/health
 
 ### POST /compress — 文本压缩
 
-**请求**
-
-```json
-{
-  "content": "...",
-  "context": "..."
-}
-```
-
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `content` | string | 是 | 待压缩内容，最大 500KB |
-| `context` | string | 否 | 查询上下文，帮助日志/搜索场景按相关性打分保留重要行，中英文均可 |
+| `context` | string | 否 | 查询上下文，仅对 log/search 策略有效：按关键词相关性打分决定保留哪些行 |
 
-**响应**
+**请求示例（JSON 压缩，20条）**
+
+```json
+{"content": "[{\"id\": 0, \"name\": \"user_0\", \"status\": \"inactive\", \"score\": 0.0, \"email\": \"user0@example.com\"}, {\"id\": 1, \"name\": \"user_1\", \"status\": \"active\", \"score\": 1.5, \"email\": \"user1@example.com\"}, {\"id\": 2, \"name\": \"user_2\", \"status\": \"active\", \"score\": 3.0, \"email\": \"user2@example.com\"}, {\"id\": 3, \"name\": \"user_3\", \"status\": \"inactive\", \"score\": 4.5, \"email\": \"user3@example.com\"}, {\"id\": 4, \"name\": \"user_4\", \"status\": \"active\", \"score\": 6.0, \"email\": \"user4@example.com\"}, {\"id\": 5, \"name\": \"user_5\", \"status\": \"active\", \"score\": 7.5, \"email\": \"user5@example.com\"}, {\"id\": 6, \"name\": \"user_6\", \"status\": \"inactive\", \"score\": 9.0, \"email\": \"user6@example.com\"}, {\"id\": 7, \"name\": \"user_7\", \"status\": \"active\", \"score\": 10.5, \"email\": \"user7@example.com\"}, {\"id\": 8, \"name\": \"user_8\", \"status\": \"active\", \"score\": 12.0, \"email\": \"user8@example.com\"}, {\"id\": 9, \"name\": \"user_9\", \"status\": \"inactive\", \"score\": 13.5, \"email\": \"user9@example.com\"}, {\"id\": 10, \"name\": \"user_10\", \"status\": \"active\", \"score\": 15.0, \"email\": \"user10@example.com\"}, {\"id\": 11, \"name\": \"user_11\", \"status\": \"active\", \"score\": 16.5, \"email\": \"user11@example.com\"}, {\"id\": 12, \"name\": \"user_12\", \"status\": \"inactive\", \"score\": 18.0, \"email\": \"user12@example.com\"}, {\"id\": 13, \"name\": \"user_13\", \"status\": \"active\", \"score\": 19.5, \"email\": \"user13@example.com\"}, {\"id\": 14, \"name\": \"user_14\", \"status\": \"active\", \"score\": 21.0, \"email\": \"user14@example.com\"}, {\"id\": 15, \"name\": \"user_15\", \"status\": \"inactive\", \"score\": 22.5, \"email\": \"user15@example.com\"}, {\"id\": 16, \"name\": \"user_16\", \"status\": \"active\", \"score\": 24.0, \"email\": \"user16@example.com\"}, {\"id\": 17, \"name\": \"user_17\", \"status\": \"active\", \"score\": 25.5, \"email\": \"user17@example.com\"}, {\"id\": 18, \"name\": \"user_18\", \"status\": \"inactive\", \"score\": 27.0, \"email\": \"user18@example.com\"}, {\"id\": 19, \"name\": \"user_19\", \"status\": \"active\", \"score\": 28.5, \"email\": \"user19@example.com\"}]"}
+```
+
+响应（实测 ratio=0.5%）：
 
 ```json
 {
-  "compressed": "...",
+  "compressed": "\"[20]{email:string,id:int,name:string,score:float,status:string}\\nuser0@example.com,0,user_0,0.0,inactive\\nuser1@example.com,1,user_1,1.5,active\\n...\"",
   "strategy": "smart_crusher",
-  "original_chars": 65000,
-  "compressed_chars": 1200,
-  "original_tokens": 8000,
-  "compressed_tokens": 120,
-  "ratio": 0.015
+  "original_chars": 1917,
+  "compressed_chars": 904,
+  "original_tokens": 200,
+  "compressed_tokens": 1,
+  "ratio": 0.005
+}
+```
+
+**请求示例（日志压缩，100行，context 按相关性过滤）**
+
+```json
+{"content": "2024-01-01 12:00:00 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:01 INFO [app] processing request 1\n2024-01-01 12:00:02 INFO [app] processing request 2\n2024-01-01 12:00:03 INFO [app] processing request 3\n2024-01-01 12:00:04 INFO [app] processing request 4\n2024-01-01 12:00:05 INFO [app] processing request 5\n2024-01-01 12:00:06 INFO [app] processing request 6\n2024-01-01 12:00:07 INFO [app] processing request 7\n2024-01-01 12:00:08 INFO [app] processing request 8\n2024-01-01 12:00:09 INFO [app] processing request 9\n2024-01-01 12:00:10 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:11 INFO [app] processing request 11\n2024-01-01 12:00:12 INFO [app] processing request 12\n2024-01-01 12:00:13 INFO [app] processing request 13\n2024-01-01 12:00:14 INFO [app] processing request 14\n2024-01-01 12:00:15 INFO [app] processing request 15\n2024-01-01 12:00:16 INFO [app] processing request 16\n2024-01-01 12:00:17 INFO [app] processing request 17\n2024-01-01 12:00:18 INFO [app] processing request 18\n2024-01-01 12:00:19 INFO [app] processing request 19\n2024-01-01 12:00:20 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:21 INFO [app] processing request 21\n2024-01-01 12:00:22 INFO [app] processing request 22\n2024-01-01 12:00:23 INFO [app] processing request 23\n2024-01-01 12:00:24 INFO [app] processing request 24\n2024-01-01 12:00:25 INFO [app] processing request 25\n2024-01-01 12:00:26 INFO [app] processing request 26\n2024-01-01 12:00:27 INFO [app] processing request 27\n2024-01-01 12:00:28 INFO [app] processing request 28\n2024-01-01 12:00:29 INFO [app] processing request 29\n2024-01-01 12:00:30 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:31 INFO [app] processing request 31\n2024-01-01 12:00:32 INFO [app] processing request 32\n2024-01-01 12:00:33 INFO [app] processing request 33\n2024-01-01 12:00:34 INFO [app] processing request 34\n2024-01-01 12:00:35 INFO [app] processing request 35\n2024-01-01 12:00:36 INFO [app] processing request 36\n2024-01-01 12:00:37 INFO [app] processing request 37\n2024-01-01 12:00:38 INFO [app] processing request 38\n2024-01-01 12:00:39 INFO [app] processing request 39\n2024-01-01 12:00:40 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:41 INFO [app] processing request 41\n2024-01-01 12:00:42 INFO [app] processing request 42\n2024-01-01 12:00:43 INFO [app] processing request 43\n2024-01-01 12:00:44 INFO [app] processing request 44\n2024-01-01 12:00:45 INFO [app] processing request 45\n2024-01-01 12:00:46 INFO [app] processing request 46\n2024-01-01 12:00:47 INFO [app] processing request 47\n2024-01-01 12:00:48 INFO [app] processing request 48\n2024-01-01 12:00:49 INFO [app] processing request 49\n2024-01-01 12:00:50 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:51 INFO [app] processing request 51\n2024-01-01 12:00:52 INFO [app] processing request 52\n2024-01-01 12:00:53 INFO [app] processing request 53\n2024-01-01 12:00:54 INFO [app] processing request 54\n2024-01-01 12:00:55 INFO [app] processing request 55\n2024-01-01 12:00:56 INFO [app] processing request 56\n2024-01-01 12:00:57 INFO [app] processing request 57\n2024-01-01 12:00:58 INFO [app] processing request 58\n2024-01-01 12:00:59 INFO [app] processing request 59\n2024-01-01 12:01:00 ERROR [app] connection refused: db timeout\n2024-01-01 12:01:01 INFO [app] processing request 61\n2024-01-01 12:01:02 INFO [app] processing request 62\n2024-01-01 12:01:03 INFO [app] processing request 63\n2024-01-01 12:01:04 INFO [app] processing request 64\n2024-01-01 12:01:05 INFO [app] processing request 65\n2024-01-01 12:01:06 INFO [app] processing request 66\n2024-01-01 12:01:07 INFO [app] processing request 67\n2024-01-01 12:01:08 INFO [app] processing request 68\n2024-01-01 12:01:09 INFO [app] processing request 69\n2024-01-01 12:01:10 ERROR [app] connection refused: db timeout\n2024-01-01 12:01:11 INFO [app] processing request 71\n2024-01-01 12:01:12 INFO [app] processing request 72\n2024-01-01 12:01:13 INFO [app] processing request 73\n2024-01-01 12:01:14 INFO [app] processing request 74\n2024-01-01 12:01:15 INFO [app] processing request 75\n2024-01-01 12:01:16 INFO [app] processing request 76\n2024-01-01 12:01:17 INFO [app] processing request 77\n2024-01-01 12:01:18 INFO [app] processing request 78\n2024-01-01 12:01:19 INFO [app] processing request 79\n2024-01-01 12:01:20 ERROR [app] connection refused: db timeout\n2024-01-01 12:01:21 INFO [app] processing request 81\n2024-01-01 12:01:22 INFO [app] processing request 82\n2024-01-01 12:01:23 INFO [app] processing request 83\n2024-01-01 12:01:24 INFO [app] processing request 84\n2024-01-01 12:01:25 INFO [app] processing request 85\n2024-01-01 12:01:26 INFO [app] processing request 86\n2024-01-01 12:01:27 INFO [app] processing request 87\n2024-01-01 12:01:28 INFO [app] processing request 88\n2024-01-01 12:01:29 INFO [app] processing request 89\n2024-01-01 12:01:30 ERROR [app] connection refused: db timeout\n2024-01-01 12:01:31 INFO [app] processing request 91\n2024-01-01 12:01:32 INFO [app] processing request 92\n2024-01-01 12:01:33 INFO [app] processing request 93\n2024-01-01 12:01:34 INFO [app] processing request 94\n2024-01-01 12:01:35 INFO [app] processing request 95\n2024-01-01 12:01:36 INFO [app] processing request 96\n2024-01-01 12:01:37 INFO [app] processing request 97\n2024-01-01 12:01:38 INFO [app] processing request 98\n2024-01-01 12:01:39 INFO [app] processing request 99", "context": "connection error"}
+```
+
+响应（实测 ratio=68.5%，ERROR 行优先保留）：
+
+```json
+{
+  "compressed": "2024-01-01 12:00:00 ERROR [app] connection refused: db timeout\n2024-01-01 12:00:01 INFO [app] processing request 1\n...",
+  "strategy": "log",
+  "original_chars": 5390,
+  "compressed_chars": 3682,
+  "original_tokens": 710,
+  "compressed_tokens": 486,
+  "ratio": 0.685
 }
 ```
 
@@ -95,27 +112,15 @@ curl http://localhost:8010/health
 
 ### POST /compress/batch — 批量文本压缩
 
-**请求**
+最多 32 条（`MAX_BATCH`），顺序执行，响应顺序与请求一致。
+
+**请求示例（JSON）**
 
 ```json
 {
   "items": [
-    {"content": "...", "context": "..."},
-    {"content": "..."}
-  ]
-}
-```
-
-- 最多 32 条（`MAX_BATCH`），每条限制同单条
-- 顺序执行，响应顺序与请求一致
-
-**响应**
-
-```json
-{
-  "results": [
-    { ...单条响应格式... },
-    { ...单条响应格式... }
+    {"content": "[{\"id\":1,\"status\":\"error\"},{\"id\":2,\"status\":\"ok\"}]"},
+    {"content": "2024-01-01 ERROR [app] timeout\n2024-01-01 INFO [app] ok", "context": "timeout"}
   ]
 }
 ```
@@ -127,12 +132,27 @@ curl http://localhost:8010/health
 **请求**
 
 ```json
-{
-  "image": "<base64>",
-  "max_dimension": 768,
-  "quality": 85
-}
+{"image": "<base64>", "max_dimension": 768, "quality": 85}
 ```
+
+> `image` 为图片的 base64 字符串（支持带或不带 `data:image/...;base64,` 前缀）。手动测试可用以下命令生成一张测试图片的 base64：
+>
+> ```bash
+> python3 -c "
+> import base64, io, random
+> from PIL import Image
+> random.seed(42)
+> img = Image.new('RGB', (1536, 1024))
+> img.putdata([(random.randint(0,255),random.randint(0,255),random.randint(0,255)) for _ in range(1536*1024)])
+> buf = io.BytesIO()
+> img.save(buf, format='PNG')
+> b64 = base64.b64encode(buf.getvalue()).decode()
+> import json
+> print(json.dumps({'image': b64, 'max_dimension': 768, 'quality': 85}))
+> " > /tmp/img_payload.json && curl -s -X POST http://localhost:8010/compress/image \
+>   -H "Content-Type: application/json" \
+>   -d @/tmp/img_payload.json | python3 -m json.tool
+> ```
 
 | 字段 | 类型 | 必填 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
@@ -168,16 +188,16 @@ curl http://localhost:8010/health
 
 ### POST /compress/image/batch — 批量图片压缩
 
+最多 32 条，并发处理（受 `IMAGE_CONCURRENCY` 控制）。请求格式同 `/compress/image` 的批量包装，完整示例见 `tests/verify.py`（section 8）。
+
 ```json
 {
   "items": [
-    {"image": "...", "max_dimension": 768, "quality": 85},
-    {"image": "..."}
+    {"image": "<base64>", "max_dimension": 768, "quality": 85},
+    {"image": "<base64>"}
   ]
 }
 ```
-
-- 最多 32 条，并发处理（受 `IMAGE_CONCURRENCY` 控制）
 
 ---
 
@@ -242,8 +262,10 @@ python3.12 tests/verify.py --url http://localhost:8010
 
 ### 性能测试
 
+测量**压缩服务本身**的延迟（不含 LLM 调用），关注 p95/p99。
+
 ```bash
-# 60s 串行压测（显示 QPS、p50、p95）
+# 60s 串行压测（单请求延迟基线）
 mise run bench
 
 # 并发压测（扫描 1→2→4→8→16 并发，60s/级，找峰值 QPS 和延迟拐点）
@@ -251,36 +273,68 @@ mise run bench-load
 
 # 快速测试（5s/场景）
 mise run bench-quick
-
-# 效果测试（关键词保留率）
-mise run bench-quality
 ```
+
+Payload 覆盖三档规模（100 / 500 / 1000 条），模拟真实工具调用大小。
 
 **实测吞吐（Linux 2核 2worker，并发8）**
 
-| 场景 | 峰值 QPS | p50 | p95 | p99 |
-|---|---|---|---|---|
-| JSON | 82/s | 105ms | 158ms | 182ms |
-| 搜索结果 | 85/s | 102ms | 155ms | 182ms |
-| 日志 英文 | 68/s | 117ms | 161ms | 180ms |
-| 日志 中文 | 76/s | 104ms | 144ms | 160ms |
-| 代码 | 44/s | 176ms | 271ms | 300ms |
+| 场景 | payload 规模 | 峰值 QPS | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| JSON | 100 条 ~6KB | 82/s | 105ms | 158ms | 182ms |
+| 搜索结果 | 200 行 ~12KB | 85/s | 102ms | 155ms | 182ms |
+| 日志 英文 | 500 行 ~35KB | 68/s | 117ms | 161ms | 180ms |
+| 日志 中文 | 300 行 ~20KB | 76/s | 104ms | 144ms | 160ms |
+| 代码 | 30 函数 ~8KB | 44/s | 176ms | 271ms | 300ms |
 
-> 并发 8 时 QPS 饱和，继续加并发延迟升、吞吐不增。单请求 p50 14~35ms。
+> 并发 8 时 QPS 饱和，继续加并发延迟升、吞吐不增。单请求串行 p50 14~35ms。  
+> 注：headroom 官方 benchmark 测 1K 条 JSON 时 p50≈2s，payload 越大压缩耗时线性增长。
 
 ### 效果评测
+
+**方案**：before/after QA 准确度对比，不依赖 LLM judge。
+
+```
+数据集自带 ground_truth（短答案，如地名、人名、数字）
+
+Baseline：  原始 context + question → LLM → 回答
+                                               ↓ token-overlap F1 vs ground_truth
+Compressed：/compress(context) + question → LLM → 回答
+                                               ↓ token-overlap F1 vs ground_truth
+
+保留率 = compressed_F1 / baseline_F1（越接近 100% 越好）
+```
+
+**数据集**：
+
+| 数据集 | 场景 | 样本数 |
+|---|---|---|
+| tool_outputs | 内置工具调用样本 | 8 |
+| hotpotqa | 多跳推理 QA（Wikipedia） | 500 |
+| msmarco | 搜索段落 QA（Bing） | 500 |
+| codesearchnet | 代码搜索 | 500 |
+
+> squad / bfcl 不纳入：squad 全部透传（测不出压缩效果）；bfcl ground_truth 为 JSON schema，token overlap F1 无意义。
 
 ```bash
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.deepseek.com
 export EVAL_MODEL=deepseek-v4-flash
 
-# 端到端评测（通过 /compress 接口，验证压缩后 LLM 回答准确率）
+# 端到端评测（hotpotqa + msmarco + codesearchnet，n=500，并发20）
 mise run eval
 
-# 全量评测（所有数据集，n=200）
+# 全量评测（n=500，所有有效数据集）
 mise run eval-full
 ```
+
+**成本换算**（参考 GPT-5 输入价格 $5/1M token）：
+
+```
+节省成本 = (original_tokens - compressed_tokens) × $5 / 1,000,000
+```
+
+eval_service.py 输出结果中包含每个数据集的 token 节省量和估算成本。
 
 ---
 
