@@ -54,38 +54,58 @@ def cjk_bigrams(text: str) -> str:
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-JSON_100 = json.dumps([
-    {"id": i, "name": f"user_{i}", "email": f"user{i}@example.com",
-     "status": "active" if i % 3 else "inactive", "score": i * 1.5}
-    for i in range(100)
-])
+def _make_json(n: int) -> str:
+    return json.dumps([
+        {"id": i, "name": f"user_{i}", "email": f"user{i}@example.com",
+         "status": "active" if i % 3 else "inactive", "score": i * 1.5}
+        for i in range(n)
+    ])
 
-LOG_500 = "\n".join(
-    f"2024-01-01 12:00:{i:02d} {'ERROR' if i % 20 == 0 else 'INFO'} "
-    f"[app.service] {'connection failed: timeout' if i % 20 == 0 else f'processing request {i}'}"
-    for i in range(500)
-)
+def _make_log(n: int) -> str:
+    return "\n".join(
+        f"2024-01-01 12:{i//60:02d}:{i%60:02d} {'ERROR' if i % 20 == 0 else 'INFO'} "
+        f"[app.service] {'connection failed: timeout' if i % 20 == 0 else f'processing request {i}'}"
+        for i in range(n)
+    )
 
-CODE_200 = "\n".join([
-    "import os, sys, json, logging",
-    "from typing import Optional, List",
-    "",
-] + [
-    f"def process_{i}(data: List[dict]) -> Optional[dict]:\n"
-    f"    \"\"\"Process item {i}.\"\"\"\n"
-    f"    if not data:\n        return None\n"
-    f"    result = {{}}\n"
-    f"    for item in data:\n        result[item['id']] = item['value']\n"
-    f"    return result\n"
-    for i in range(30)
-])
+def _make_search(n: int) -> str:
+    return "\n".join(
+        f"src/module_{i % 10}/handler.py:{i * 3}:    raise ValueError('invalid input: {i}')"
+        if i % 5 == 0 else
+        f"src/module_{i % 10}/handler.py:{i * 3}:    return process(data[{i}])"
+        for i in range(n)
+    )
 
-SEARCH_RESULTS = "\n".join(
-    f"src/module_{i % 10}/handler.py:{i * 3}:    raise ValueError('invalid input: {i}')"
-    if i % 5 == 0 else
-    f"src/module_{i % 10}/handler.py:{i * 3}:    return process(data[{i}])"
-    for i in range(200)
-)
+def _make_code(n: int) -> str:
+    return "\n".join([
+        "import os, sys, json, logging",
+        "from typing import Optional, List",
+        "",
+    ] + [
+        f"def process_{i}(data: List[dict]) -> Optional[dict]:\n"
+        f"    \"\"\"Process item {i}.\"\"\"\n"
+        f"    if not data:\n        return None\n"
+        f"    result = {{}}\n"
+        f"    for item in data:\n        result[item['id']] = item['value']\n"
+        f"    return result\n"
+        for i in range(n)
+    ])
+
+JSON_100  = _make_json(100)
+JSON_500  = _make_json(500)
+JSON_1000 = _make_json(1000)
+
+LOG_500  = _make_log(500)
+LOG_1000 = _make_log(1000)
+LOG_2000 = _make_log(2000)
+
+SEARCH_RESULTS      = _make_search(200)
+SEARCH_RESULTS_500  = _make_search(500)
+SEARCH_RESULTS_1000 = _make_search(1000)
+
+CODE_200  = _make_code(30)
+CODE_500  = _make_code(70)
+CODE_1000 = _make_code(140)
 
 ZH_JSON = json.dumps([
     {"序号": i, "状态": "错误" if i % 10 == 0 else "正常",
@@ -195,23 +215,34 @@ def run_perf(base: str, n: int, duration: float = 0) -> None:
     print(f"{'场景':<38} {'n':>5} {'p50':>7} {'p95':>7} {'mean':>7}  {'qps':>6}  {'压缩率':>8}  策略")
     print("-" * 90)
 
-    image_b64 = _make_image_b64()
+    image_b64     = _make_image_b64()
+    image_b64_lg  = _make_image_b64(1536, 1024)
     scenarios = [
-        ("JSON 100条（英文）",          "/compress",       {"content": JSON_100,            "context": "find errors"}),
-        ("JSON 100条（中文）",          "/compress",       {"content": ZH_JSON,             "context": "查找错误"}),
-        ("日志 500行（英文ERROR）",      "/compress",       {"content": LOG_500,             "context": "connection error"}),
-        ("日志 300行（中文+英文level）", "/compress",       {"content": ZH_LOG_WITH_LEVEL,   "context": "认证失败"}),
-        ("代码 200行（英文）",          "/compress",       {"content": CODE_200,            "context": "process function"}),
-        ("代码（中文注释）",            "/compress",       {"content": ZH_CODE,             "context": "处理请求"}),
-        ("搜索结果 200行（英文）",      "/compress",       {"content": SEARCH_RESULTS,      "context": "ValueError"}),
-        ("搜索结果（中文）",            "/compress",       {"content": ZH_SEARCH,           "context": "认证失败"}),
-        ("搜索结果（中英混写）",        "/compress",       {"content": MIXED_SEARCH,        "context": "认证失败 ERROR"}),
-        ("Git diff 30 hunks",           "/compress",       {"content": GIT_DIFF,            "context": "auth logic change"}),
-        ("图片 1024×768 → 768px",      "/compress/image", {"image": image_b64}),
-        ("图片 1024×768 → 512px",      "/compress/image", {"image": image_b64, "max_dimension": 512}),
+        ("JSON 100条（英文）",           "/compress",       {"content": JSON_100,            "context": "find errors"}),
+        ("JSON 500条（英文）",           "/compress",       {"content": JSON_500,            "context": "find errors"}),
+        ("JSON 1000条（英文）",          "/compress",       {"content": JSON_1000,           "context": "find errors"}),
+        ("JSON 100条（中文）",           "/compress",       {"content": ZH_JSON,             "context": "查找错误"}),
+        ("日志 500行（英文）",           "/compress",       {"content": LOG_500,             "context": "connection error"}),
+        ("日志 1000行（英文）",          "/compress",       {"content": LOG_1000,            "context": "connection error"}),
+        ("日志 2000行（英文）",          "/compress",       {"content": LOG_2000,            "context": "connection error"}),
+        ("日志 300行（中文）",           "/compress",       {"content": ZH_LOG_WITH_LEVEL,   "context": "认证失败"}),
+        ("搜索 200行（英文）",           "/compress",       {"content": SEARCH_RESULTS,      "context": "ValueError"}),
+        ("搜索 500行（英文）",           "/compress",       {"content": SEARCH_RESULTS_500,  "context": "ValueError"}),
+        ("搜索 1000行（英文）",          "/compress",       {"content": SEARCH_RESULTS_1000, "context": "ValueError"}),
+        ("搜索（中文）",                 "/compress",       {"content": ZH_SEARCH,           "context": "认证失败"}),
+        ("代码 200行（英文）",           "/compress",       {"content": CODE_200,            "context": "process function"}),
+        ("代码 500行（英文）",           "/compress",       {"content": CODE_500,            "context": "process function"}),
+        ("代码 1000行（英文）",          "/compress",       {"content": CODE_1000,           "context": "process function"}),
+        ("代码（中文注释）",             "/compress",       {"content": ZH_CODE,             "context": "处理请求"}),
+        ("搜索（中英混写）",             "/compress",       {"content": MIXED_SEARCH,        "context": "认证失败 ERROR"}),
+        ("Git diff 30 hunks",            "/compress",       {"content": GIT_DIFF,            "context": "auth logic change"}),
+        ("图片 1024×768 → 768px",       "/compress/image", {"image": image_b64}),
+        ("图片 1024×768 → 512px",       "/compress/image", {"image": image_b64, "max_dimension": 512}),
+        ("图片 1536×1024 → 768px",      "/compress/image", {"image": image_b64_lg}),
     ]
 
-    batch_payload = {"items": [{"content": JSON_100, "context": "find errors"}] * 8}
+    batch_payload     = {"items": [{"content": JSON_100,  "context": "find errors"}] * 8}
+    batch_payload_lg  = {"items": [{"content": JSON_1000, "context": "find errors"}] * 8}
 
     with httpx.Client(base_url=base, timeout=30) as client:
         for name, endpoint, payload in scenarios:
@@ -221,9 +252,10 @@ def run_perf(base: str, n: int, duration: float = 0) -> None:
             strategy  = r.get("strategy", r.get("media_type", ""))
             print(f"{name:<38} {stats['n']:>5} {stats['p50']:>6}ms {stats['p95']:>6}ms {stats['mean']:>6}ms  {stats['qps']:>5.1f}/s  {ratio_str:>8}  {strategy}")
 
-        stats = bench(client, "/compress/batch", batch_payload, n, duration)
-        r = stats["result"]["results"][0]
-        print(f"{'Batch 8×JSON':<38} {stats['n']:>5} {stats['p50']:>6}ms {stats['p95']:>6}ms {stats['mean']:>6}ms  {stats['qps']:>5.1f}/s  {r['ratio']:.1%}  batch")
+        for blabel, bpayload in [("Batch 8×JSON-100", batch_payload), ("Batch 8×JSON-1000", batch_payload_lg)]:
+            stats = bench(client, "/compress/batch", bpayload, n, duration)
+            r = stats["result"]["results"][0]
+            print(f"{blabel:<38} {stats['n']:>5} {stats['p50']:>6}ms {stats['p95']:>6}ms {stats['mean']:>6}ms  {stats['qps']:>5.1f}/s  {r['ratio']:.1%}  batch")
 
     print()
 
@@ -286,13 +318,20 @@ def run_load(base: str, max_concurrency: int, duration: float) -> None:
     if levels[-1] != max_concurrency:
         levels.append(max_concurrency)
 
+    image_b64_load = _make_image_b64(1536, 1024)
     load_scenarios = [
-        ("JSON 英文",   "/compress",       {"content": JSON_100,          "context": "find errors"}),
-        ("JSON 中文",   "/compress",       {"content": ZH_JSON,           "context": "查找错误"}),
-        ("日志 英文",   "/compress",       {"content": LOG_500,           "context": "connection error"}),
-        ("日志 中文",   "/compress",       {"content": ZH_LOG_WITH_LEVEL, "context": "认证失败"}),
-        ("搜索 英文",   "/compress",       {"content": SEARCH_RESULTS,    "context": "ValueError"}),
-        ("代码 英文",   "/compress",       {"content": CODE_200,          "context": "process function"}),
+        ("JSON-100",      "/compress",       {"content": JSON_100,            "context": "find errors"}),
+        ("JSON-500",      "/compress",       {"content": JSON_500,            "context": "find errors"}),
+        ("JSON-1000",     "/compress",       {"content": JSON_1000,           "context": "find errors"}),
+        ("日志-500行",    "/compress",       {"content": LOG_500,             "context": "connection error"}),
+        ("日志-1000行",   "/compress",       {"content": LOG_1000,            "context": "connection error"}),
+        ("日志-2000行",   "/compress",       {"content": LOG_2000,            "context": "connection error"}),
+        ("搜索-200行",    "/compress",       {"content": SEARCH_RESULTS,      "context": "ValueError"}),
+        ("搜索-1000行",   "/compress",       {"content": SEARCH_RESULTS_1000, "context": "ValueError"}),
+        ("代码-200行",    "/compress",       {"content": CODE_200,            "context": "process function"}),
+        ("代码-1000行",   "/compress",       {"content": CODE_1000,           "context": "process function"}),
+        ("图片 1536×1024","/compress/image", {"image": image_b64_load}),
+        ("Batch 8×JSON",  "/compress/batch", {"items": [{"content": JSON_100, "context": "find errors"}] * 8}),
     ]
 
     print(f"\n{'='*100}")
@@ -306,7 +345,11 @@ def run_load(base: str, max_concurrency: int, duration: float) -> None:
         for concurrency in levels:
             stats = bench_concurrent(base, endpoint, payload, concurrency, duration)
             r = stats["result"]
-            ratio_str = f"{r['ratio']:.1%}" if r.get("ratio") is not None else "—"
+            if "results" in r:       # batch
+                ratio = r["results"][0].get("ratio") if r["results"] else None
+            else:
+                ratio = r.get("ratio")
+            ratio_str = f"{ratio:.1%}" if ratio is not None else "—"
             peak_mark = " ◀峰值" if stats["qps"] < prev_qps * 0.95 and prev_qps > 0 else ""
             print(
                 f"{name:<14} {concurrency:>4} {stats['n']:>6} "

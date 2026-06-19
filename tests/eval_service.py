@@ -24,14 +24,18 @@ import re
 import statistics
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from threading import Lock
 
 import httpx
 
 DEFAULT_URL      = "http://localhost:8010"
-DEFAULT_N        = 100
-DEFAULT_DATASETS = ["tool_outputs", "squad", "bfcl"]
-ALL_DATASETS     = ["tool_outputs", "squad", "bfcl", "hotpotqa", "msmarco", "codesearchnet"]
+DEFAULT_N        = 500
+DEFAULT_DATASETS = ["hotpotqa", "msmarco", "codesearchnet"]
+ALL_DATASETS     = ["tool_outputs", "hotpotqa", "msmarco", "codesearchnet", "squad", "bfcl"]
+
+GPT5_INPUT_PRICE = 5.0   # $ per 1M tokens
 
 
 # ── 指标函数 ──────────────────────────────────────────────────────────────────
@@ -87,6 +91,8 @@ class CompressResult:
     strategy: str
     original_chars: int
     compressed_chars: int
+    original_tokens: int
+    compressed_tokens: int
     ratio: float
     latency_ms: float
 
@@ -102,6 +108,8 @@ def _compress(http: httpx.Client, content: str, context: str = "") -> CompressRe
         strategy=d["strategy"],
         original_chars=d["original_chars"],
         compressed_chars=d["compressed_chars"],
+        original_tokens=d.get("original_tokens", 0),
+        compressed_tokens=d.get("compressed_tokens", 0),
         ratio=d["ratio"],
         latency_ms=ms,
     )
@@ -119,6 +127,7 @@ class CaseResult:
     compression_ratio: float
     strategy: str
     latency_ms: float
+    tokens_saved: int = 0
 
 
 @dataclass
@@ -132,6 +141,8 @@ class DatasetResult:
     accuracy_preservation: float   # compressed_f1 / baseline_f1（保留率）
     avg_compression_ratio: float
     avg_latency_ms: float
+    tokens_saved: int              # 累计节省 token 数
+    cost_saved_usd: float          # 按 GPT-5 $5/1M 估算
     cases: list[CaseResult] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -152,6 +163,7 @@ def run_dataset(
     llm: "openai.OpenAI",
     model: str,
     baseline: bool,
+    concurrency: int = 1,
 ) -> DatasetResult:
     from headroom.evals.datasets import load_tool_output_samples, load_dataset_by_name
 
@@ -161,44 +173,51 @@ def run_dataset(
     else:
         suite = load_dataset_by_name(dataset_name, n=n)
     cases = suite.cases[:n]
-    print(f"  共 {len(cases)} 条样本")
+    total = len(cases)
+    print(f"  共 {total} 条样本，并发={concurrency}")
 
     results: list[CaseResult] = []
-    for i, case in enumerate(cases, 1):
-        print(f"  [{i}/{len(cases)}] {case.id}", end="", flush=True)
+    print_lock = Lock()
+    counter = [0]
 
+    def process_case(case) -> CaseResult | None:
         question     = getattr(case, "query", "")
         ground_truth = str(getattr(case, "ground_truth", ""))
 
-        # 压缩
         try:
             cr = _compress(http, case.context, question)
         except Exception as e:
-            print(f"  ✗ compress error: {e}")
-            continue
+            with print_lock:
+                print(f"  ✗ [{case.id}] compress error: {e}")
+            return None
 
-        # baseline：原始 context → LLM
         if baseline:
             try:
                 base_ans = _llm_answer(llm, model, case.context, question)
                 base_f1  = f1_score(base_ans, ground_truth)
                 base_em  = exact_match(base_ans, ground_truth)
             except Exception as e:
-                print(f"  ✗ baseline LLM error: {e}")
+                with print_lock:
+                    print(f"  ✗ [{case.id}] baseline LLM error: {e}")
                 base_f1, base_em = 0.0, False
         else:
-            base_f1, base_em = 1.0, True  # 假设 baseline 完美，只测压缩效果
+            base_f1, base_em = 1.0, True
 
-        # compressed：压缩后 context → LLM
         try:
             comp_ans = _llm_answer(llm, model, cr.compressed, question)
             comp_f1  = f1_score(comp_ans, ground_truth)
             comp_em  = exact_match(comp_ans, ground_truth)
         except Exception as e:
-            print(f"  ✗ compressed LLM error: {e}")
+            with print_lock:
+                print(f"  ✗ [{case.id}] compressed LLM error: {e}")
             comp_f1, comp_em = 0.0, False
 
-        results.append(CaseResult(
+        with print_lock:
+            counter[0] += 1
+            mark = "✓" if comp_f1 >= base_f1 * 0.9 else "△" if comp_f1 >= base_f1 * 0.7 else "✗"
+            print(f"  [{counter[0]}/{total}] {case.id}  {mark} F1={comp_f1:.2f}(base={base_f1:.2f}) ratio={cr.ratio:.1%} [{cr.strategy}]")
+
+        return CaseResult(
             case_id=case.id,
             baseline_f1=base_f1,
             compressed_f1=comp_f1,
@@ -207,13 +226,16 @@ def run_dataset(
             compression_ratio=cr.ratio,
             strategy=cr.strategy,
             latency_ms=cr.latency_ms,
-        ))
+            tokens_saved=max(0, cr.original_tokens - cr.compressed_tokens),
+        )
 
-        mark = "✓" if comp_f1 >= base_f1 * 0.9 else "△" if comp_f1 >= base_f1 * 0.7 else "✗"
-        print(f"  {mark} F1={comp_f1:.2f}(base={base_f1:.2f}) ratio={cr.ratio:.1%} [{cr.strategy}]")
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for r in pool.map(process_case, cases):
+            if r is not None:
+                results.append(r)
 
     if not results:
-        return DatasetResult(dataset_name, 0, 0, 0, 0, 0, 0, 0, 0)
+        return DatasetResult(dataset_name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
 
     avg_base_f1  = statistics.mean(r.baseline_f1 for r in results)
     avg_comp_f1  = statistics.mean(r.compressed_f1 for r in results)
@@ -222,6 +244,8 @@ def run_dataset(
     preservation = avg_comp_f1 / max(avg_base_f1, 1e-6)
     avg_ratio    = statistics.mean(r.compression_ratio for r in results)
     avg_latency  = statistics.mean(r.latency_ms for r in results)
+    total_saved  = sum(r.tokens_saved for r in results)
+    cost_saved   = total_saved * GPT5_INPUT_PRICE / 1_000_000
 
     return DatasetResult(
         dataset=dataset_name,
@@ -233,6 +257,8 @@ def run_dataset(
         accuracy_preservation=preservation,
         avg_compression_ratio=avg_ratio,
         avg_latency_ms=avg_latency,
+        tokens_saved=total_saved,
+        cost_saved_usd=cost_saved,
         cases=results,
     )
 
@@ -257,12 +283,14 @@ def main() -> None:
         """.strip(),
     )
     parser.add_argument("--url",         default=DEFAULT_URL, help="服务地址")
-    parser.add_argument("-n",            type=int, default=DEFAULT_N, help="每个数据集取前 N 条（默认 100）")
+    parser.add_argument("-n",            type=int, default=DEFAULT_N, help="每个数据集取前 N 条（默认 500）")
     parser.add_argument("--datasets",    nargs="+", default=DEFAULT_DATASETS,
                         choices=ALL_DATASETS + ["all"], metavar="DATASET",
                         help="要评测的数据集，空格分隔")
     parser.add_argument("--no-baseline", action="store_true",
                         help="跳过 baseline LLM 调用（节省费用，只看压缩后 F1）")
+    parser.add_argument("--concurrency", type=int, default=20,
+                        help="并发 LLM 调用数（默认 20，DeepSeek 2500 RPM 内安全值）")
     args = parser.parse_args()
 
     if "all" in args.datasets:
@@ -304,6 +332,7 @@ def main() -> None:
     print(f"  模型:    {model}  base_url={base_url or '(openai默认)'}")
     print(f"  数据集:  {' '.join(args.datasets)}")
     print(f"  样本数:  每集最多 {args.n} 条")
+    print(f"  并发:    {args.concurrency}（DeepSeek 2500 RPM 下建议 ≤20）")
     print(f"  Baseline: {'跳过' if args.no_baseline else '开启（2x LLM 调用）'}")
     print(f"{'='*80}")
 
@@ -315,7 +344,9 @@ def main() -> None:
             print(f"数据集: {ds}")
             print(f"{'─'*60}")
             try:
-                result = run_dataset(ds, args.n, http, llm, model, baseline=not args.no_baseline)
+                result = run_dataset(ds, args.n, http, llm, model,
+                                    baseline=not args.no_baseline,
+                                    concurrency=args.concurrency)
                 all_results.append(result)
             except Exception as e:
                 print(f"  ✗ 数据集加载失败: {e}")
@@ -325,29 +356,34 @@ def main() -> None:
     print(f"\n{'='*80}")
     print("汇总结果")
     print(f"{'='*80}")
-    print(f"{'数据集':<20} {'n':>4}  {'基线F1':>8}  {'压缩F1':>8}  {'保留率':>7}  {'压缩率':>7}  {'压缩耗时':>8}")
-    print("-" * 80)
+    print(f"{'数据集':<20} {'n':>4}  {'基线F1':>8}  {'压缩F1':>8}  {'保留率':>7}  {'压缩率':>7}  {'节省token':>10}  {'成本节省(GPT-5)':>15}")
+    print("-" * 100)
     for r in all_results:
         print(
             f"{r.dataset:<20} {r.n:>4}  "
             f"{r.baseline_f1:>8.3f}  {r.compressed_f1:>8.3f}  "
             f"{r.accuracy_preservation:>7.1%}  {r.avg_compression_ratio:>7.1%}  "
-            f"{r.avg_latency_ms:>7.0f}ms"
+            f"{r.tokens_saved:>10,}  ${r.cost_saved_usd:>13.4f}"
         )
 
     valid = [r for r in all_results if r.n > 0]
     if valid:
-        total_n       = sum(r.n for r in valid)
-        total_base_f1 = statistics.mean(r.baseline_f1 for r in valid)
-        total_comp_f1 = statistics.mean(r.compressed_f1 for r in valid)
-        total_pres    = statistics.mean(r.accuracy_preservation for r in valid)
-        total_ratio   = statistics.mean(r.avg_compression_ratio for r in valid)
-        print("-" * 80)
+        total_n          = sum(r.n for r in valid)
+        total_base_f1    = statistics.mean(r.baseline_f1 for r in valid)
+        total_comp_f1    = statistics.mean(r.compressed_f1 for r in valid)
+        total_pres       = statistics.mean(r.accuracy_preservation for r in valid)
+        total_ratio      = statistics.mean(r.avg_compression_ratio for r in valid)
+        total_tok_saved  = sum(r.tokens_saved for r in valid)
+        total_cost_saved = sum(r.cost_saved_usd for r in valid)
+        print("-" * 100)
         print(
             f"{'总计/均值':<20} {total_n:>4}  "
             f"{total_base_f1:>8.3f}  {total_comp_f1:>8.3f}  "
-            f"{total_pres:>7.1%}  {total_ratio:>7.1%}"
+            f"{total_pres:>7.1%}  {total_ratio:>7.1%}  "
+            f"{total_tok_saved:>10,}  ${total_cost_saved:>13.4f}"
         )
+        print(f"\n  GPT-5 输入价格参考：$5.00/1M tokens")
+        print(f"  以上节省成本 = 每次评测的 {total_n} 条样本，实际成本按真实 token 数线性扩展")
 
     print()
 

@@ -22,12 +22,12 @@ description = "并发压测（扫描 1→2→4→8→16 并发，60s/级）"
 run = "python3.12 tests/benchmark.py --url http://localhost:8010 --load --concurrency 16 --duration 60"
 
 [tasks.eval]
-description = "端到端效果评测（通过 /compress 接口，DeepSeek 验证信息保留率）"
-run = "python3.12 tests/eval_service.py --url http://localhost:8010"
+description = "端到端效果评测（hotpotqa+msmarco+codesearchnet，n=500，并发20）"
+run = "python3.12 tests/eval_service.py --url http://localhost:8010 --concurrency 20"
 
 [tasks.eval-full]
-description = "全量效果评测（所有数据集，n=200）"
-run = "python3.12 tests/eval_service.py --url http://localhost:8010 --datasets all -n 200"
+description = "全量效果评测（所有有效数据集，n=500）"
+run = "python3.12 tests/eval_service.py --url http://localhost:8010 --datasets all -n 500 --concurrency 20"
 
 [tasks.bench-all]
 description = "性能 + 效果"
