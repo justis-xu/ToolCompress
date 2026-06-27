@@ -100,6 +100,17 @@ JSON_ZH = json.dumps([
     for i in range(300)
 ], ensure_ascii=False)
 
+# 长 JSON 字符串会触发 headroom SmartCrusher 的 CCR 占位符路径；
+# 服务层必须拦住 <<ccr:...>>，不能把不可解析占位符直接返回给调用方。
+JSON_LONG_STRINGS = json.dumps([
+    {
+        "id": i,
+        "source": "ticket",
+        "message": ("数据库连接超时，等待连接池释放。" * 40) + f"#{i}",
+    }
+    for i in range(30)
+], ensure_ascii=False)
+
 # 1000 行应用日志，INFO/ERROR/WARN 格式，极重复 → 高压缩（预期 ratio < 10%）
 _endpoints = ["/api/charge", "/api/orders", "/api/users", "/api/refund", "/api/health"]
 LOG_EN = "\n".join(
@@ -693,7 +704,17 @@ def run_verify(base: str) -> None:
     d = compress(client, GIT_DIFF, "auth change")
     check("diff 压缩保留变更行", "new_logic" in d["compressed"])
 
-    # ── 16. 摘要 ─────────────────────────────────────────────────────────────
+    # ── 16. CCR 占位符保护 ──────────────────────────────────────────────────
+    section("16. CCR 占位符保护")
+    d = compress(client, JSON_LONG_STRINGS, "数据库连接超时")
+    check("长 JSON 请求返回 200", len(d.get("compressed", "")) > 0)
+    check("响应中不暴露 <<ccr: 占位符", "<<ccr:" not in d["compressed"],
+          d["compressed"][:120])
+    check("CCR 保护后策略可接受",
+          d["strategy"] in {"smart_crusher", "passthrough"},
+          f"strategy={d['strategy']}")
+
+    # ── 17. 摘要 ─────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     if _failures == 0:
         print(f"  \033[32m全部通过 {_total}/{_total}\033[0m")
